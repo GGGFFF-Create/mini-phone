@@ -65,7 +65,14 @@ try {
         $branch = 'main'
     }
 
-    $remote = git remote get-url origin 2>$null
+    # 查有没有 origin。注意：git 在没有 remote 时返回非零退出码，
+    # 在 $ErrorActionPreference='Stop' 下会被当成异常，所以这里临时放宽。
+    $remote = $null
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try { $remote = (git remote get-url origin 2>$null) } catch { $remote = $null }
+    $ErrorActionPreference = $prevEap
+
     $exists = $false
     if ($remote) {
         Write-Host "已有 origin: $remote" -ForegroundColor DarkGray
