@@ -22,8 +22,15 @@
 
 ```powershell
 cd E:\AIRP\_work\mini-phone
-.\scripts\publish.ps1 -Token ghp_xxxxxxxx
+.\scripts\publish.cmd -Token ghp_xxxxxxxx
 ```
+
+> **为什么用 `.cmd` 而不是 `.ps1`**：Windows 默认的 `RemoteSigned` 策略会拦住未签名的 `.ps1`。`.cmd` 里带了 `-ExecutionPolicy Bypass`，不用改系统设置，也不影响别的脚本。
+>
+> 直接用 `.ps1` 也行，但要这样调：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\scripts\publish.ps1 -Token ghp_xxx
+> ```
 
 脚本会做四件事：
 

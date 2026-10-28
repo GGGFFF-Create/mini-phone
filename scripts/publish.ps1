@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     把「小手机」发布到 GitHub。
 
@@ -158,8 +158,7 @@ try {
         } | ConvertTo-Json
 
         try {
-            Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -Method Post `
-                -Headers $headers -Body $body -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+            Invoke-RestMethod -Uri 'https://api.github.com/user/repos' -Method Post -Headers $headers -Body $body -ContentType 'application/json' -TimeoutSec 30 | Out-Null
             Write-Host '  仓库已创建' -ForegroundColor DarkGray
         } catch {
             $detail = $_.ErrorDetails.Message
@@ -176,7 +175,8 @@ try {
 
     # 推送时把 token 塞进 URL，但不写进配置文件
     Write-Host '推送…' -ForegroundColor Cyan
-    $pushUrl = "https://$User`:$Token@github.com/$User/$Repo.git"
+    # ${User} 明确变量边界 —— 不用反引号，省得被当续行符
+    $pushUrl = "https://${User}:${Token}@github.com/$User/$Repo.git"
     git push $pushUrl "main:main" --force-with-lease 2>&1 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
 
     if ($LASTEXITCODE -ne 0) {
