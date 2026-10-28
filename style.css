@@ -1,22 +1,28 @@
 /* 宿主侧样式：手机浮动窗 + 正文里的声波按钮 */
 
 /* ============================================================
-   手机浮动窗
-   
-   刻意不用 <dialog> + showModal()：那会盖一层遮罩，正文看不见也点不了。
-   这里是一个 fixed 浮层，可拖、可缩放、可收成小球。
+   手机浮动窗 —— iPhone 那种圆润外形
+
+   不用 <dialog> + showModal()：那会盖一层遮罩，正文看不见也点不了。
+   这里是一个 fixed 浮层，可拖、可缩放、可收成一条。
+   大圆角 + 深色边框 + home 指示条，做出"手机"的观感。
    ============================================================ */
 
 .mp-float {
+  --mp-frame: #12141a;
+
   position: fixed;
   z-index: 30000;
   display: flex;
   flex-direction: column;
-  border-radius: 18px;
-  background: #0b0d12;
-  border: 1px solid rgba(255, 255, 255, .12);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, .55), 0 0 0 1px rgba(0, 0, 0, .3);
+  border-radius: 46px;
+  border: 6px solid var(--mp-frame);
+  background: var(--mp-frame);
   overflow: hidden;
+  box-shadow:
+    0 24px 70px rgba(10, 20, 40, .48),
+    0 4px 14px rgba(10, 20, 40, .26),
+    inset 0 0 0 1px rgba(255, 255, 255, .06);
   min-width: 300px;
   min-height: 420px;
   transition: box-shadow .15s ease;
@@ -24,16 +30,15 @@
 
 .mp-float.mp-hidden { display: none; }
 
-/* 标题栏：拖动把手 */
+/* 标题栏：拖动把手。塞在手机壳里，做得细一点 */
 .mp-bar {
   flex: 0 0 auto;
-  height: 30px;
+  height: 26px;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 8px 0 11px;
-  background: linear-gradient(180deg, #1a1f2b, #14171f);
-  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  gap: 6px;
+  padding: 0 8px 0 15px;
+  background: var(--mp-frame);
   cursor: grab;
   user-select: none;
   touch-action: none;
@@ -41,42 +46,43 @@
 .mp-bar:active { cursor: grabbing; }
 
 .mp-bar-dot {
-  width: 7px; height: 7px;
+  width: 6px; height: 6px;
   border-radius: 50%;
   background: #4f8cff;
-  box-shadow: 0 0 6px rgba(79, 140, 255, .8);
+  box-shadow: 0 0 7px rgba(79, 140, 255, .9);
   flex: 0 0 auto;
 }
 
 .mp-bar-title {
   flex: 1 1 auto;
-  font: 600 11.5px/1 -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  color: #9aa6bd;
-  letter-spacing: .04em;
+  font: 600 10.5px/1 -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: #7b869c;
+  letter-spacing: .07em;
 }
 
-.mp-bar-acts { display: flex; gap: 2px; flex: 0 0 auto; }
+.mp-bar-acts { display: flex; gap: 1px; flex: 0 0 auto; }
 
 .mp-bar-acts button {
-  width: 22px; height: 22px;
+  min-width: 20px; height: 20px;
+  padding: 0 4px;
   display: grid; place-items: center;
-  padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 5px;
   background: transparent;
-  color: #7c879c;
-  font: 14px/1 -apple-system, 'Segoe UI', sans-serif;
+  color: #6e7889;
+  font: 11px/1 -apple-system, 'Segoe UI', sans-serif;
   cursor: pointer;
 }
 .mp-bar-acts button:hover { background: rgba(255, 255, 255, .1); color: #dbe3f2; }
-.mp-bar-acts [data-act='close']:hover { background: rgba(224, 80, 80, .28); color: #ffb4b4; }
+.mp-bar-acts [data-act='close']:hover { background: rgba(224, 80, 80, .3); color: #ffb4b4; }
+.mp-bar-acts [data-act='size'] { font-size: 10px; }
 
 /* 内容区 */
 .mp-body {
   flex: 1 1 auto;
   position: relative;
   min-height: 0;
-  background: #0b0d12;
+  background: #f2f7ff;
 }
 
 .mp-body iframe {
@@ -84,36 +90,53 @@
   width: 100%;
   height: 100%;
   border: 0;
-  background: #0b0d12;
+  background: #f2f7ff;
+}
+
+/* home 指示条：纯装饰，不挡点击 */
+.mp-float::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 34%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(20, 30, 50, .22);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 5;
 }
 
 /* 右下角缩放手柄 */
 .mp-grip {
   position: absolute;
-  right: 0; bottom: 0;
-  width: 16px; height: 16px;
+  right: 2px; bottom: 2px;
+  width: 18px; height: 18px;
   cursor: nwse-resize;
   touch-action: none;
+  z-index: 6;
   background:
-    linear-gradient(135deg, transparent 45%, rgba(255, 255, 255, .22) 45%, rgba(255, 255, 255, .22) 55%, transparent 55%),
-    linear-gradient(135deg, transparent 68%, rgba(255, 255, 255, .16) 68%, rgba(255, 255, 255, .16) 76%, transparent 76%);
-  opacity: .6;
+    linear-gradient(135deg, transparent 48%, rgba(255, 255, 255, .32) 48%, rgba(255, 255, 255, .32) 56%, transparent 56%),
+    linear-gradient(135deg, transparent 70%, rgba(255, 255, 255, .22) 70%, rgba(255, 255, 255, .22) 78%, transparent 78%);
+  opacity: .5;
 }
 .mp-grip:hover { opacity: 1; }
 
-/* 收起来的状态：只剩一条标题栏 */
+/* 收起来：只剩一条，圆角收小 */
 .mp-float.mp-min {
-  height: 30px !important;
-  min-height: 30px;
-  width: 150px !important;
-  border-radius: 15px;
-  opacity: .92;
+  height: 38px !important;
+  min-height: 38px;
+  width: 170px !important;
+  border-radius: 20px;
+  opacity: .95;
 }
 .mp-float.mp-min .mp-body,
-.mp-float.mp-min .mp-grip { display: none; }
-.mp-float.mp-min .mp-bar { border-bottom: 0; }
+.mp-float.mp-min .mp-grip,
+.mp-float.mp-min::after { display: none; }
+.mp-float.mp-min .mp-bar { height: 26px; }
 
-/* 手机上（窄屏）：直接铺满，不要浮窗 */
+/* 手机上（窄屏）：直接铺满，外壳圆角也去掉 */
 @media (max-width: 600px) {
   .mp-float {
     left: 0 !important;
@@ -125,26 +148,21 @@
     min-width: 0;
     min-height: 0;
   }
-  .mp-grip { display: none; }
-  .mp-bar { height: 36px; }
+  .mp-grip, .mp-float::after { display: none; }
+  .mp-bar { height: 34px; }
 }
 
 #miniPhone-item i { width: 1.1em; text-align: center; }
 
 /* ============================================================
    正文里的声波按钮
-   
+
    这些元素由 messageFormatter 钩子插进正文，所以样式必须写在宿主侧，
    不能放 iframe 里 —— iframe 的 CSS 作用不到酒馆正文。
    ============================================================ */
 
 .mp-line {
-  /* 保持行内，不破坏正文排版 */
   display: inline;
-}
-
-.mp-tr {
-  /* 译文本身就是普通文字，不用额外装饰 */
 }
 
 .mp-play {
@@ -174,7 +192,6 @@
 
 .mp-play:disabled { cursor: default; }
 
-/* 三根小竖条 */
 .mp-play > i {
   display: block;
   width: 2px;
@@ -184,7 +201,6 @@
   transform-origin: center;
 }
 
-/* 加载中：整体呼吸 */
 .mp-play[data-state='loading'] {
   opacity: .9;
   animation: mpPulse 1s ease-in-out infinite;
@@ -194,16 +210,13 @@
   opacity: .5;
 }
 
-/* 播放中：三根条跳，模拟声波 */
 .mp-play[data-state='playing'] { opacity: 1; }
 .mp-play[data-state='playing'] > i:nth-child(1) { animation: mpBar .62s ease-in-out infinite; }
 .mp-play[data-state='playing'] > i:nth-child(2) { animation: mpBar .52s ease-in-out infinite .09s; }
 .mp-play[data-state='playing'] > i:nth-child(3) { animation: mpBar .58s ease-in-out infinite .18s; }
 
-/* 播放过：留一个淡淡的痕迹，提示"这句有声音" */
 .mp-play[data-state='done'] { opacity: .72; }
 
-/* 出错：变红，鼠标悬停能看到原因（tooltip 由 JS 设 title） */
 .mp-play[data-state='error'] {
   opacity: 1;
   color: var(--SmartThemeEmColor, #e05a5a);
@@ -219,7 +232,6 @@
   50% { opacity: 1; }
 }
 
-/* 尊重用户的"减少动效"设置 */
 @media (prefers-reduced-motion: reduce) {
   .mp-play[data-state='playing'] > i,
   .mp-play[data-state='loading'] {
@@ -228,7 +240,6 @@
   .mp-play[data-state='playing'] > i { height: 8px; }
 }
 
-/* 深色主题下稍微亮一点，别在深色正文里看不见 */
 @media (prefers-color-scheme: dark) {
   .mp-play { opacity: .62; }
   .mp-play:hover { opacity: 1; }

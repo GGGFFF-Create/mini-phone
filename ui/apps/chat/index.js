@@ -192,25 +192,35 @@ export async function mount(root, ctx) {
   searchRow.append(searchInput);
   wrap.append(searchRow);
 
-  const bar = el('div', 'chat-tabs');
-  const tabThreads = el('button', 'chat-tab on', '消息');
-  const tabContacts = el('button', 'chat-tab', '联系人');
-  tabThreads.type = 'button';
-  tabContacts.type = 'button';
-  bar.append(tabThreads, tabContacts);
-  wrap.append(bar);
-
   const body = el('div', 'chat-body');
   wrap.append(body);
+
+  /* 底部导航：消息 / 联系人 / 动态 */
+  const nav = el('div', 'chat-nav');
+  const NAV = [
+    { id: 'threads', icon: '💬', label: '消息' },
+    { id: 'contacts', icon: '👤', label: '联系人' },
+    { id: 'moments', icon: '🖼️', label: '动态' },
+  ];
+  const navBtns = new Map();
+
+  for (const item of NAV) {
+    const btn = el('button', `chat-nav-btn ${item.id === 'threads' ? 'on' : ''}`);
+    btn.type = 'button';
+    btn.dataset.tab = item.id;
+    btn.append(el('span', 'chat-nav-icon', item.icon));
+    btn.append(el('span', 'chat-nav-label', item.label));
+    btn.addEventListener('click', () => switchTab(item.id));
+    nav.append(btn);
+    navBtns.set(item.id, btn);
+  }
+  wrap.append(nav);
   root.append(wrap);
 
   searchInput.addEventListener('input', () => {
     query = searchInput.value.trim().toLowerCase();
-    if (!active) render();
+    if (!active && tab !== 'moments') render();
   });
-
-  tabThreads.addEventListener('click', () => switchTab('threads'));
-  tabContacts.addEventListener('click', () => switchTab('contacts'));
 
   function buildHead() {
     const head = el('div', 'chat-head');
@@ -259,22 +269,49 @@ export async function mount(root, ctx) {
   const switchTab = (name) => {
     tab = name;
     active = null;
-    tabThreads.classList.toggle('on', name === 'threads');
-    tabContacts.classList.toggle('on', name === 'contacts');
-    searchRow.classList.remove('hidden');
-    bar.classList.remove('hidden');
+    for (const [id, btn] of navBtns) btn.classList.toggle('on', id === name);
+    // 「动态」有自己的头图，不显示顶部搜索
+    const isMoments = name === 'moments';
+    searchRow.classList.toggle('hidden', isMoments);
+    wrap.querySelector('.chat-head')?.classList.toggle('hidden', isMoments);
+    nav.classList.remove('hidden');
     render();
   };
 
   /* ------------------------------------------------------- 渲染 */
 
+  let momentsHost = null;
+  let momentsInst = null;
+
   function render() {
     body.innerHTML = '';
     if (active) { renderThread(); return; }
-    bar.classList.remove('hidden');
+
+    nav.classList.remove('hidden');
+
+    if (tab === 'moments') { renderMoments(); return; }
+
     searchRow.classList.remove('hidden');
     if (tab === 'contacts') renderContacts();
     else renderThreads();
+  }
+
+  /** 动态页：把朋友圈模块挂进来（它自己管头图和列表） */
+  async function renderMoments() {
+    if (!momentsHost) {
+      momentsHost = el('div', 'tab-moments');
+      body.append(momentsHost);
+    }
+
+    if (momentsInst) { momentsInst.refresh?.(); return; }
+
+    try {
+      const v = encodeURIComponent(window.__MP_V || '');
+      const mod = await import(/* @vite-ignore */ `../moments/index.js?v=${v}`);
+      momentsInst = await mod.mount(momentsHost, { ...ctx, setTitle: () => {} });
+    } catch (e) {
+      momentsHost.append(el('p', 'empty', `动态打不开：${e?.message ?? e}`));
+    }
   }
 
   function renderThreads() {
@@ -445,8 +482,9 @@ export async function mount(root, ctx) {
       active = await api.thread(id);
       if (!active) throw new Error('会话不存在');
       await api.markRead(id);
-      bar.classList.add('hidden');
+      nav.classList.add('hidden');
       searchRow.classList.add('hidden');
+      wrap.querySelector('.chat-head')?.classList.add('hidden');
       setTitle(active.name);
       render();
       refreshInBackground();
@@ -458,8 +496,9 @@ export async function mount(root, ctx) {
   function closeThread() {
     active = null;
     typing = false;
-    bar.classList.remove('hidden');
+    nav.classList.remove('hidden');
     searchRow.classList.remove('hidden');
+    wrap.querySelector('.chat-head')?.classList.remove('hidden');
     setTitle('消息');
     render();
     refreshInBackground();
@@ -622,7 +661,7 @@ export async function mount(root, ctx) {
 
     back() {
       if (active) { closeThread(); return true; }
-      if (tab === 'contacts') { switchTab('threads'); return true; }
+      if (tab !== 'threads') { switchTab('threads'); return true; }
       if (query) { searchInput.value = ''; query = ''; render(); return true; }
       return false;
     },

@@ -478,7 +478,52 @@ html, body {
 .chat-search input::placeholder { color: var(--ink-dim); }
 .chat-search-icon { font-size: 13px; color: var(--ink-dim); opacity: .8; }
 
-/* 两页签 */
+/* 底部导航：消息 / 联系人 / 动态 */
+.chat-nav {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  backdrop-filter: blur(14px);
+}
+.chat-nav.hidden { display: none; }
+
+.chat-nav-btn {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 4px 4px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--ink-dim);
+  font: inherit;
+  cursor: pointer;
+  transition: color .15s ease, background-color .15s ease;
+}
+.chat-nav-btn:active { background: var(--surface-2); }
+.chat-nav-icon { font-size: 19px; line-height: 1; filter: grayscale(1); opacity: .55; transition: all .15s ease; }
+.chat-nav-label { font-size: 10.5px; letter-spacing: .02em; }
+
+.chat-nav-btn.on { color: var(--accent); }
+.chat-nav-btn.on .chat-nav-icon { filter: none; opacity: 1; transform: translateY(-1px); }
+.chat-nav-btn.on .chat-nav-label { font-weight: 650; }
+
+/* 动态页嵌在消息 App 里时的容器 */
+.tab-moments {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.tab-moments .moments-view { height: 100%; }
+
+.chat-body { position: relative; }
+
+/* 两页签（旧的，保留兼容） */
 .chat-tabs {
   flex: 0 0 auto;
   display: flex;

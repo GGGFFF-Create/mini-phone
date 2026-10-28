@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -710,8 +710,21 @@ function unmountEntry() {
  */
 
 const LAYOUT_KEY = 'miniPhone.layout';
-const FLOAT_W = 390;
-const FLOAT_H = 760;
+
+/**
+ * 三档尺寸。默认用「中」——之前固定 390×760，在笔记本上一放就占掉小半屏。
+ * 数字按 iPhone 的逻辑分辨率来（SE / 8 / 14）。
+ */
+const SIZES = {
+  s: { w: 330, h: 620 },
+  m: { w: 372, h: 736 },
+  l: { w: 392, h: 844 },
+};
+const SIZE_ORDER = ['s', 'm', 'l'];
+/** 默认用「小」—— 手机是配着正文一起看的，占太多屏幕就没法边看边用了 */
+const DEFAULT_SIZE = 's';
+
+const sizeOf = (name) => SIZES[name] ?? SIZES[DEFAULT_SIZE];
 
 function loadLayout() {
   try {
@@ -728,9 +741,28 @@ function saveLayout() {
     localStorage.setItem(LAYOUT_KEY, JSON.stringify({
       left: Math.round(r.left), top: Math.round(r.top),
       w: Math.round(r.width), h: Math.round(r.height),
+      size: currentSize,
       minimized: panel.classList.contains('mp-min'),
     }));
   } catch { /* 忽略 */ }
+}
+
+/** 当前尺寸档位 */
+let currentSize = DEFAULT_SIZE;
+
+function applySize(name) {
+  const size = sizeOf(name);
+  currentSize = SIZES[name] ? name : DEFAULT_SIZE;
+  if (!panel) return;
+  const r = panel.getBoundingClientRect();
+  const pos = clampToViewport(r.left, r.top, size.w + 12, size.h + 12);
+  panel.style.width = `${size.w}px`;
+  panel.style.height = `${size.h}px`;
+  panel.style.left = `${pos.left}px`;
+  panel.style.top = `${pos.top}px`;
+  const label = panel.querySelector('[data-size-label]');
+  if (label) label.textContent = { s: '小', m: '中', l: '大' }[currentSize] ?? '';
+  saveLayout();
 }
 
 function clampToViewport(left, top, w, h) {
@@ -760,6 +792,7 @@ function buildPanel() {
       <span class="mp-bar-dot"></span>
       <span class="mp-bar-title">小手机</span>
       <span class="mp-bar-acts">
+        <button type="button" data-act="size" title="切换尺寸"><span data-size-label>中</span></button>
         <button type="button" data-act="min" title="收起">—</button>
         <button type="button" data-act="close" title="关闭">×</button>
       </span>
@@ -775,13 +808,15 @@ function buildPanel() {
   iframe.setAttribute('allow', 'microphone; autoplay');
   panel.querySelector('.mp-body').append(iframe);
 
-  // 初始位置：靠右下，不挡正文中间
+  // 初始位置与尺寸
   const saved = loadLayout();
-  const w = saved?.w ?? FLOAT_W;
-  const h = saved?.h ?? Math.min(FLOAT_H, window.innerHeight - 40);
+  currentSize = saved?.size && SIZES[saved.size] ? saved.size : DEFAULT_SIZE;
+  const size = sizeOf(currentSize);
+  const w = saved?.w ?? size.w;
+  const h = saved?.h ?? Math.min(size.h, window.innerHeight - 60);
   const pos = clampToViewport(
     saved?.left ?? window.innerWidth - w - 32,
-    saved?.top ?? Math.max(20, (window.innerHeight - h) / 2),
+    saved?.top ?? Math.max(16, (window.innerHeight - h) / 2),
     w, h,
   );
   Object.assign(panel.style, {
@@ -799,6 +834,15 @@ function buildPanel() {
     e.stopPropagation();
     toggleMinimize();
   });
+  panel.querySelector('[data-act="size"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const i = SIZE_ORDER.indexOf(currentSize);
+    applySize(SIZE_ORDER[(i + 1) % SIZE_ORDER.length]);
+  });
+
+  // 标题栏上的尺寸字
+  const sizeLabel = panel.querySelector('[data-size-label]');
+  if (sizeLabel) sizeLabel.textContent = { s: '小', m: '中', l: '大' }[currentSize] ?? '';
 
   // 拖动（只在标题栏上，且不点到按钮）
   const bar = panel.querySelector('[data-drag]');
