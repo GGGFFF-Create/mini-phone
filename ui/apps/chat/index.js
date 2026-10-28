@@ -1,16 +1,13 @@
 /**
  * 消息 App。
  *
- * 三层：
- *   ① 消息列表（已有会话）
- *   ② 联系人（当前这张卡里的人）—— 点一下就开新会话
- *   ③ 会话窗口
+ * 结构（照常见 IM 的分层）：
+ *   顶部   头像 + 名字 + 在线状态 + 加号
+ *   搜索   过滤当前页签的列表
+ *   页签   消息 / 联系人
+ *   内容   会话列表 / 联系人列表 / 聊天窗口
  *
- * 【为什么要「联系人」这一层】
- * 只有消息列表的话，新用户打开就是空的，不知道能跟谁聊。
- * 联系人页是入口：从这儿挑一个人，会话就建起来了。
- *
- * 返回键逐层退：会话 → 列表 → 外壳（回桌面）。
+ * 返回键逐层退：会话 → 联系人页签 → 列表 → 外壳（回桌面）。
  */
 
 const el = (tag, cls, text) => {
@@ -20,9 +17,17 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+const timeOf = (ts) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const today = new Date().toDateString() === d.toDateString();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return today ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()}`;
+};
+
 /**
  * 头像：有图用图，没图用首字。图挂了也退回首字，不让它显示裂图。
- *
  * 传了 onEdit 就变成可点的按钮 —— 点它换头像，点别的地方走原来的逻辑。
  */
 function avatarEl(name, src, { onEdit = null, size = '' } = {}) {
@@ -53,7 +58,7 @@ function avatarEl(name, src, { onEdit = null, size = '' } = {}) {
     box.setAttribute('aria-label', `换「${label}」的头像`);
     box.append(el('span', 'avatar-edit-dot', '✎'));
     box.addEventListener('click', (e) => {
-      e.stopPropagation();     // 别触发整行的「开始聊天」
+      e.stopPropagation();
       e.preventDefault();
       onEdit(label);
     });
@@ -62,19 +67,7 @@ function avatarEl(name, src, { onEdit = null, size = '' } = {}) {
   return box;
 }
 
-const timeOf = (ts) => {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const today = new Date().toDateString() === d.toDateString();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return today ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()}`;
-};
-
-/**
- * 消息气泡上的声波按钮。
- * 只管状态和调用，真正的合成在宿主那边（它才认识引擎配置）。
- */
+/** 消息气泡上的声波按钮 */
 function sayButton(message) {
   const btn = el('button', 'bubble-say');
   btn.type = 'button';
@@ -110,7 +103,7 @@ function sayButton(message) {
   return btn;
 }
 
-/** 气泡内容按类型渲染。新类型只要在这里加一个分支。 */
+/** 气泡内容按类型渲染 */
 function bubbleBody(msg) {
   const wrap = el('span', 'bubble-body');
   const meta = msg.meta ?? {};
@@ -124,8 +117,7 @@ function bubbleBody(msg) {
     case 'money': {
       const isRed = meta.type === 'redpacket';
       wrap.append(el('span', 'bubble-money', isRed ? '🧧' : '💰'));
-      const amt = meta.amount != null ? `¥${meta.amount}` : '';
-      wrap.append(el('span', 'bubble-amount', amt));
+      wrap.append(el('span', 'bubble-amount', meta.amount != null ? `¥${meta.amount}` : ''));
       if (meta.note) wrap.append(el('span', 'bubble-cap', meta.note));
       break;
     }
@@ -180,33 +172,99 @@ export async function mount(root, ctx) {
 
   let threads = [];
   let contacts = { list: [], spaceName: '', hasSpace: false };
+  let me = { name: '我', avatar: '' };
   let active = null;
-  let tab = 'threads';        // threads | contacts
+  let tab = 'threads';
+  let query = '';
   let typing = false;
   let sending = false;
 
   /* ------------------------------------------------------- 骨架 */
 
   const wrap = el('div', 'view chat-app');
+  wrap.append(buildHead());
+
+  const searchRow = el('div', 'chat-search');
+  searchRow.append(el('span', 'chat-search-icon', '🔍'));
+  const searchInput = el('input');
+  searchInput.type = 'text';
+  searchInput.placeholder = '搜索聊天和联系人';
+  searchRow.append(searchInput);
+  wrap.append(searchRow);
+
   const bar = el('div', 'chat-tabs');
   const tabThreads = el('button', 'chat-tab on', '消息');
   const tabContacts = el('button', 'chat-tab', '联系人');
   tabThreads.type = 'button';
   tabContacts.type = 'button';
   bar.append(tabThreads, tabContacts);
+  wrap.append(bar);
 
   const body = el('div', 'chat-body');
-  wrap.append(bar, body);
+  wrap.append(body);
   root.append(wrap);
+
+  searchInput.addEventListener('input', () => {
+    query = searchInput.value.trim().toLowerCase();
+    if (!active) render();
+  });
+
+  tabThreads.addEventListener('click', () => switchTab('threads'));
+  tabContacts.addEventListener('click', () => switchTab('contacts'));
+
+  function buildHead() {
+    const head = el('div', 'chat-head');
+
+    const av = el('button', 'chat-head-avatar');
+    av.type = 'button';
+    av.title = '我是谁';
+    av.addEventListener('click', () => ctx.openApp?.('me'));
+    head.append(av);
+
+    const info = el('div', 'chat-head-info');
+    info.append(el('b', 'chat-head-name', '手机'));
+    const status = el('span', 'chat-head-status');
+    status.append(el('span', 'chat-head-dot'));
+    status.append(el('span', '', '在线'));
+    info.append(status);
+    head.append(info);
+
+    const add = el('button', 'chat-head-add', '＋');
+    add.type = 'button';
+    add.title = '找个人聊天';
+    add.addEventListener('click', () => switchTab('contacts'));
+    head.append(add);
+
+    return head;
+  }
+
+  /** 顶部头像和名字跟着主角走 */
+  function paintHead() {
+    const av = wrap.querySelector('.chat-head-avatar');
+    const nm = wrap.querySelector('.chat-head-name');
+    if (!av || !nm) return;
+    nm.textContent = me?.name || '手机';
+    av.innerHTML = '';
+    if (me?.avatar) {
+      const img = document.createElement('img');
+      img.src = me.avatar;
+      img.alt = me.name;
+      img.addEventListener('error', () => { av.textContent = (me.name ?? '我').slice(0, 1); });
+      av.append(img);
+    } else {
+      av.textContent = (me?.name ?? '我').slice(0, 1);
+    }
+  }
 
   const switchTab = (name) => {
     tab = name;
+    active = null;
     tabThreads.classList.toggle('on', name === 'threads');
     tabContacts.classList.toggle('on', name === 'contacts');
+    searchRow.classList.remove('hidden');
+    bar.classList.remove('hidden');
     render();
   };
-  tabThreads.addEventListener('click', () => switchTab('threads'));
-  tabContacts.addEventListener('click', () => switchTab('contacts'));
 
   /* ------------------------------------------------------- 渲染 */
 
@@ -214,26 +272,30 @@ export async function mount(root, ctx) {
     body.innerHTML = '';
     if (active) { renderThread(); return; }
     bar.classList.remove('hidden');
+    searchRow.classList.remove('hidden');
     if (tab === 'contacts') renderContacts();
     else renderThreads();
   }
 
   function renderThreads() {
-    if (!threads.length) {
-      const empty = el('div', 'chat-empty');
-      empty.append(el('div', 'chat-empty-icon', '💬'));
-      empty.append(el('b', '', '还没有会话'));
-      empty.append(el('p', '', '去「联系人」里挑一个角色，就能开始聊。'));
-      const go = el('button', 'pill-btn', '打开联系人');
-      go.type = 'button';
-      go.addEventListener('click', () => switchTab('contacts'));
-      empty.append(go);
-      body.append(empty);
+    const list = threads.filter(t => !query || String(t.name ?? '').toLowerCase().includes(query));
+
+    if (!list.length) {
+      body.append(emptyState({
+        icon: '💬',
+        title: query ? '没有匹配的会话' : '还没有聊天',
+        text: query
+          ? '换个词试试，或者去联系人里找人。'
+          : '点右上角的加号找人聊天。会话也可以在酒馆聊几轮后自动出现。',
+        action: query ? null : { label: '去联系人', run: () => switchTab('contacts') },
+      }));
       return;
     }
 
-    const list = el('div', 'list');
-    for (const t of threads) {
+    if (query) body.append(el('p', 'chat-contact-head', `搜索「${query}」`));
+
+    const box = el('div', 'list');
+    for (const t of list) {
       const row = el('button', 'row');
       row.type = 'button';
       row.append(avatarEl(t.name, t.avatar, { onEdit: (n) => openAvatarMenu(n) }));
@@ -249,28 +311,39 @@ export async function mount(root, ctx) {
 
       row.append(main, meta);
       row.addEventListener('click', () => openThread(t.id));
-      list.append(row);
+      box.append(row);
     }
-    body.append(list);
+    body.append(box);
   }
 
   function renderContacts() {
-    const list = contacts.list ?? [];
+    const all = contacts.list ?? [];
+    const list = all.filter(p => !query || String(p.name ?? '').toLowerCase().includes(query));
 
-    if (!list.length) {
-      const empty = el('div', 'chat-empty');
-      empty.append(el('div', 'chat-empty-icon', '👤'));
-      empty.append(el('b', '', contacts.hasSpace ? `「${contacts.spaceName}」里还没有人` : '没有打开角色卡'));
-      empty.append(el('p', '', contacts.hasSpace
-        ? '在酒馆里聊几轮，正文里说过话的人会自动出现。'
-        : '先去酒馆里选一张角色卡。'));
-      body.append(empty);
+    if (!all.length) {
+      body.append(emptyState({
+        icon: '👤',
+        title: contacts.hasSpace ? `「${contacts.spaceName}」里还没有人` : '没有打开角色卡',
+        text: contacts.hasSpace
+          ? '在酒馆里聊几轮，正文里说过话的人会自动出现在这里。'
+          : '先去酒馆里选一张角色卡。',
+      }));
       return;
     }
 
-    const head = el('p', 'chat-contact-head',
-      contacts.spaceName ? `「${contacts.spaceName}」里的人` : '可以聊天的人');
-    body.append(head);
+    /* 大标题（照 CONTACTS 那种） */
+    const title = el('div', 'chat-section-title');
+    title.append(el('small', '', 'CONTACTS'));
+    title.append(el('b', '', '联系人'));
+    body.append(title);
+
+    body.append(el('p', 'chat-section-count',
+      `好友 · ${list.length}${query ? `（搜索「${query}」）` : ''}`));
+
+    if (!list.length) {
+      body.append(emptyState({ icon: '🔍', title: '没有匹配的人', text: '换个词试试。' }));
+      return;
+    }
 
     const box = el('div', 'list');
     for (const person of list) {
@@ -280,7 +353,7 @@ export async function mount(root, ctx) {
 
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', person.name));
-      main.append(el('span', 'row-preview', person.hasVoice ? '能发语音消息' : '还没有配音色'));
+      main.append(el('span', 'row-preview', person.hasVoice ? '角色 · 能发语音消息' : '角色 · 还没有配音'));
 
       const meta = el('span', 'row-meta');
       meta.append(el('span', 'row-chevron', '›'));
@@ -290,6 +363,70 @@ export async function mount(root, ctx) {
       box.append(row);
     }
     body.append(box);
+  }
+
+  function emptyState({ icon, title, text, action }) {
+    const box = el('div', 'chat-empty');
+    box.append(el('div', 'chat-empty-icon', icon));
+    box.append(el('b', '', title));
+    box.append(el('p', '', text));
+    if (action) {
+      const btn = el('button', 'pill-btn', action.label);
+      btn.type = 'button';
+      btn.addEventListener('click', action.run);
+      box.append(btn);
+    }
+    return box;
+  }
+
+  /* ------------------------------------------------------- 头像 */
+
+  function openAvatarMenu(name) {
+    const sheet = el('div', 'sheet');
+    const panel = el('div', 'sheet-panel');
+
+    panel.append(el('div', 'sheet-title', `「${name}」的头像`));
+
+    const change = el('button', 'sheet-item', '从本地选一张图');
+    change.type = 'button';
+    change.addEventListener('click', async () => {
+      sheet.remove();
+      try {
+        const dataUrl = await ctx.pickImage(160);
+        if (!dataUrl) return;
+        await api.avatarSet(name, dataUrl);
+        await reloadPeople();
+        toast(`「${name}」的头像换好了`);
+      } catch (e) { toast(e?.message ?? '换头像失败'); }
+    });
+
+    const reset = el('button', 'sheet-item', '恢复酒馆里的封面');
+    reset.type = 'button';
+    reset.addEventListener('click', async () => {
+      sheet.remove();
+      try {
+        await api.avatarClear(name);
+        await reloadPeople();
+        toast(`「${name}」已恢复默认`);
+      } catch (e) { toast(e?.message ?? '恢复失败'); }
+    });
+
+    const cancel = el('button', 'sheet-item sheet-cancel', '取消');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => sheet.remove());
+
+    panel.append(change, reset, cancel);
+    sheet.append(panel);
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.remove(); });
+    root.append(sheet);
+  }
+
+  async function reloadPeople() {
+    try {
+      threads = await api.threads();
+      contacts = await api.contacts();
+      render();
+    } catch { /* 忽略 */ }
   }
 
   /* ------------------------------------------------------- 会话 */
@@ -309,6 +446,7 @@ export async function mount(root, ctx) {
       if (!active) throw new Error('会话不存在');
       await api.markRead(id);
       bar.classList.add('hidden');
+      searchRow.classList.add('hidden');
       setTitle(active.name);
       render();
       refreshInBackground();
@@ -321,6 +459,7 @@ export async function mount(root, ctx) {
     active = null;
     typing = false;
     bar.classList.remove('hidden');
+    searchRow.classList.remove('hidden');
     setTitle('消息');
     render();
     refreshInBackground();
@@ -363,7 +502,6 @@ export async function mount(root, ctx) {
 
     body.append(scroll);
 
-    /* 输入区 */
     const composer = el('div', 'composer');
     const input = el('input', 'composer-input');
     input.type = 'text';
@@ -416,6 +554,7 @@ export async function mount(root, ctx) {
     const panel = el('div', 'sheet-panel');
 
     const bring = el('button', 'sheet-item', '把这段聊天带进下一次正文');
+    bring.type = 'button';
     bring.addEventListener('click', async () => {
       try {
         const r = await api.bringToStory(active.id);
@@ -425,6 +564,7 @@ export async function mount(root, ctx) {
     });
 
     const preview = el('button', 'sheet-item', '看看这次会发多少字');
+    preview.type = 'button';
     preview.addEventListener('click', async () => {
       try {
         const p = await api.preview(active.id);
@@ -435,6 +575,7 @@ export async function mount(root, ctx) {
     });
 
     const cancel = el('button', 'sheet-item sheet-cancel', '取消');
+    cancel.type = 'button';
     cancel.addEventListener('click', () => sheet.remove());
 
     panel.append(bring, preview, cancel);
@@ -449,58 +590,6 @@ export async function mount(root, ctx) {
   const draftOf = (id) => drafts.get(id) ?? '';
   const saveDraft = (id, v) => { if (v) drafts.set(id, v); else drafts.delete(id); };
 
-  /* ------------------------------------------------------- 头像 */
-
-  /** 点头像弹这个：换图 / 恢复默认 */
-  function openAvatarMenu(name) {
-    const sheet = el('div', 'sheet');
-    const panel = el('div', 'sheet-panel');
-
-    panel.append(el('div', 'sheet-title', `「${name}」的头像`));
-
-    const change = el('button', 'sheet-item', '从本地选一张图');
-    change.type = 'button';
-    change.addEventListener('click', async () => {
-      sheet.remove();
-      try {
-        const dataUrl = await ctx.pickImage(160);
-        if (!dataUrl) return;                    // 用户取消
-        await api.avatarSet(name, dataUrl);
-        await reloadPeople();
-        toast(`「${name}」的头像换好了`);
-      } catch (e) { toast(e?.message ?? '换头像失败'); }
-    });
-
-    const reset = el('button', 'sheet-item', '恢复酒馆里的封面');
-    reset.type = 'button';
-    reset.addEventListener('click', async () => {
-      sheet.remove();
-      try {
-        await api.avatarClear(name);
-        await reloadPeople();
-        toast(`「${name}」已恢复默认`);
-      } catch (e) { toast(e?.message ?? '恢复失败'); }
-    });
-
-    const cancel = el('button', 'sheet-item sheet-cancel', '取消');
-    cancel.type = 'button';
-    cancel.addEventListener('click', () => sheet.remove());
-
-    panel.append(change, reset, cancel);
-    sheet.append(panel);
-    sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.remove(); });
-    root.append(sheet);
-  }
-
-  /** 头像变了之后，把会话和联系人都重拉一遍 */
-  async function reloadPeople() {
-    try {
-      threads = await api.threads();
-      contacts = await api.contacts();
-      render();
-    } catch { /* 忽略 */ }
-  }
-
   /* ------------------------------------------------------- 数据 */
 
   async function refreshInBackground() {
@@ -511,12 +600,21 @@ export async function mount(root, ctx) {
     } catch { /* 忽略 */ }
   }
 
-  try {
-    threads = await api.threads();
-    contacts = await api.contacts();
-  } catch (e) {
-    toast(`读不到数据：${e?.message ?? e}`);
-  }
+  /*
+   * 三个数据分开取，别用 Promise.all。
+   *
+   * 教训：persona() 是同步函数（返回对象，不是 Promise），写成
+   *   api.persona().catch(...)
+   * 会抛 "catch is not a function"，Promise.all 整体 reject，
+   * 结果 threads 和 contacts 也一起丢了 —— 界面上就是"什么都没有"。
+   * 分开 try/catch，一个挂了不影响另外两个。
+   */
+  try { threads = await api.threads(); } catch { threads = []; }
+  try { contacts = await api.contacts(); } catch { contacts = { list: [], spaceName: '', hasSpace: false }; }
+  try { me = await api.persona(); } catch { me = { name: '我', avatar: '' }; }
+  if (!me) me = { name: '我', avatar: '' };
+
+  paintHead();
   render();
 
   return {
@@ -525,7 +623,8 @@ export async function mount(root, ctx) {
     back() {
       if (active) { closeThread(); return true; }
       if (tab === 'contacts') { switchTab('threads'); return true; }
-      return false;              // 交回外壳 → 回桌面
+      if (query) { searchInput.value = ''; query = ''; render(); return true; }
+      return false;
     },
 
     refresh() {

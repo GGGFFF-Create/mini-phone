@@ -27,36 +27,83 @@ export async function mount(root, ctx) {
   const { api, toast, setTitle } = ctx;
 
   let moments = [];
+  let me = { name: '我', avatar: '' };
   let composing = false;
-  let openComments = new Set();     // 哪些动态展开了评论区
+  let openComments = new Set();
+  let refreshing = false;
 
   const view = el('div', 'view moments-view');
   root.append(view);
+
+  try { me = await api.persona(); } catch { /* 用默认 */ }
 
   /* --------------------------------------------------------- 渲染 */
 
   function render() {
     view.innerHTML = '';
-
-    /* 顶部工具条 */
-    const bar = el('div', 'moments-bar');
-    const who = ctx.state?.space?.name;
-    const compose = el('button', 'pill-btn', composing ? '正在写…' : '让 TA 发一条');
-    compose.type = 'button';
-    compose.disabled = composing || !who;
-    compose.addEventListener('click', doCompose);
-    bar.append(compose);
-    view.append(bar);
+    view.append(hero());
+    const list = el('div', 'moments-list');
+    view.append(list);
 
     if (!moments.length) {
-      view.append(el('p', 'empty', '还没有动态。\n在酒馆里聊几轮，或者点上面的按钮让 TA 发一条。'));
+      const empty = el('div', 'chat-empty');
+      empty.append(el('div', 'chat-empty-icon', '🖼️'));
+      empty.append(el('b', '', '还没有动态'));
+      empty.append(el('p', '',
+        '点上面的 ＋ 让角色发一条。正文里写 [朋友圈] 也会出现在这里。'));
+      list.append(empty);
       return;
     }
 
-    /* 动态流 */
-    for (const m of moments) {
-      view.append(card(m));
+    for (const m of moments) list.append(card(m));
+  }
+
+  /** 顶部渐变头图：标题 + 三个工具按钮 + 右下角自己的头像 */
+  function hero() {
+    const box = el('div', 'moments-hero');
+
+    box.append(el('div', 'moments-hero-title', '好友动态'));
+
+    const acts = el('div', 'moments-hero-acts');
+
+    const refresh = el('button', 'moments-hero-btn', '⟳');
+    refresh.type = 'button';
+    refresh.title = '刷新';
+    refresh.addEventListener('click', () => { reload().then(() => toast('已刷新')); });
+    acts.append(refresh);
+
+    const compose = el('button', 'moments-hero-btn', composing ? '…' : '＋');
+    compose.type = 'button';
+    compose.title = '让角色发一条';
+    compose.disabled = composing;
+    compose.addEventListener('click', doCompose);
+    acts.append(compose);
+
+    const sort = el('button', 'moments-hero-btn', '⇅');
+    sort.type = 'button';
+    sort.title = '按时间排序（最新的在上面）';
+    sort.addEventListener('click', () => {
+      moments = [...moments].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+      render();
+      toast('已按时间重排');
+    });
+    acts.append(sort);
+
+    box.append(acts);
+
+    const av = el('div', 'moments-hero-avatar');
+    if (me?.avatar) {
+      const img = document.createElement('img');
+      img.src = me.avatar;
+      img.alt = me.name;
+      img.addEventListener('error', () => { av.textContent = (me.name ?? '我').slice(0, 1); });
+      av.append(img);
+    } else {
+      av.textContent = (me?.name ?? '我').slice(0, 1);
     }
+    box.append(av);
+
+    return box;
   }
 
   function card(m) {

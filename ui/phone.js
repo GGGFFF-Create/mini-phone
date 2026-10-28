@@ -62,6 +62,11 @@ async function openApp(appId, params = {}) {
   const app = findApp(appId);
   if (!app) return;
 
+  // 关键：先清空。不清的话上一个 App 的 DOM 还留着，
+  // 两个界面会叠在一起 —— 症状是"点了图标没变化"或"内容串了"。
+  try { current?.inst?.leave?.(); } catch { /* 忽略 */ }
+  appLayer().innerHTML = '';
+
   const root = el('div', 'app-root');
   appLayer().append(root);
 
@@ -182,6 +187,9 @@ function makeContext(app, params) {
 
     /** 直接回桌面 */
     home: leaveApp,
+
+    /** 跳到另一个 App（顶部头像点进「我」用） */
+    openApp: (appId) => openApp(appId),
 
     /** 让壳重新拉未读 */
     refreshBadges,
