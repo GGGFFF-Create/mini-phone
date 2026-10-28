@@ -4,7 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>小手机</title>
-<link rel="stylesheet" href="theme.css">
+<script>
+  /*
+   * 版本号从 iframe 地址的 ?v= 拿来，给下面所有资源加在 URL 上。
+   *
+   * 为什么必须这么做：ES module 和 CSS 都会走浏览器缓存，光给 index.html
+   * 带 ?v= 不够 —— html 里 <script src="phone.js"> 的路径没变，浏览器
+   * 照样用旧的 phone.js，再连带旧的 apps.js 和 App 模块。
+   * 症状就是"改了代码、刷新了页面，界面还是老样子"。
+   */
+  window.__MP_V = new URLSearchParams(location.search).get('v') || '';
+  document.write('<link rel="stylesheet" href="theme.css?v=' + encodeURIComponent(window.__MP_V) + '">');
+</script>
 </head>
 <body data-theme="dark" data-layer="lock">
 <div class="phone">
@@ -44,6 +55,11 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
-<script type="module" src="phone.js"></script>
+<script type="module">
+  const s = document.createElement('script');
+  s.type = 'module';
+  s.src = 'phone.js?v=' + encodeURIComponent(window.__MP_V || '');
+  document.body.append(s);
+</script>
 </body>
 </html>

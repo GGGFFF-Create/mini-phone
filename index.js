@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.5.2';
+const VERSION = '0.5.3';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -664,7 +664,11 @@ function bindEvents() {
       // ③ 重算并推给界面
       refreshRoster();
       bridge?.post('space', spaceInfo());
-    } catch { /* 忽略 */ }
+    } catch (e) {
+      // 这里以前是空 catch —— 出错就静默，界面上看不出任何异常。
+      // 换成能看见的日志，出问题时有线索。
+      console.warn('[mini-phone] 换卡处理失败：', e?.message, e);
+    }
   });
 }
 
@@ -1304,9 +1308,40 @@ function createBridge() {
     api,
     /** 主页面 → iframe 的单向推送 */
     post(type, payload) {
-      try { iframe?.contentWindow?.__miniPhoneReceive?.(type, payload); }
-      catch (e) { console.warn('[mini-phone] 推送失败：', e?.message); }
+      try {
+        const target = iframe?.contentWindow;
+        if (!target) { console.debug('[mini-phone] 推送跳过（没有 iframe）：', type); return; }
+        if (typeof target.__miniPhoneReceive !== 'function') {
+          console.debug('[mini-phone] 推送跳过（界面还没接上）：', type);
+          return;
+        }
+        target.__miniPhoneReceive(type, payload);
+      } catch (e) {
+        console.warn('[mini-phone] 推送失败：', type, e?.message);
+      }
     },
+  };
+}
+
+/**
+ * 调试口：控制台里 `__miniPhoneDebug()` 能一眼看到当前状态。
+ * 排查"为什么界面没更新"这类问题时很有用。
+ */
+function installDebug() {
+  globalThis.__miniPhoneDebug = () => {
+    const space = currentSpace();
+    return {
+      active,
+      version: VERSION,
+      space: { key: space.key, name: space.name, members: space.members },
+      roster: (roster?.list ?? []).map(c => `${c.name}(${c.source ?? '?'})`),
+      seenRoles: (settings?.seenRoles ?? []).map(r => `${r.name}@${(r.cards ?? []).join(',')}`),
+      panel: { exists: !!panel, connected: !!panel?.isConnected, hidden: panel?.classList.contains('mp-hidden') },
+      bridge: !!bridge,
+      iframeReady: !!iframe?.contentWindow?.__miniPhoneReady,
+      hasReceiver: typeof iframe?.contentWindow?.__miniPhoneReceive === 'function',
+      voiceVoices: Object.keys(settings?.voice?.voices ?? {}),
+    };
   };
 }
 
@@ -1386,6 +1421,7 @@ export async function enable() {
   mountEntry();
   bindEvents();
   bindRender();
+  installDebug();
   inject();
 
   active = true;

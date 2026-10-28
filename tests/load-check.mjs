@@ -94,22 +94,30 @@ for (const file of JS) {
 const appsFile = resolve(ROOT, 'ui/apps.js');
 if (existsSync(appsFile)) {
   const src = read(appsFile);
-  const loads = [...src.matchAll(/load:\s*\(\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => m[1]);
-  if (!loads.length) problems.push('ui/apps.js 里没有找到任何 load() 动态 import');
 
-  for (const spec of loads) {
+  // App 入口有两种写法，都认：
+  //   load: () => import('./apps/chat/index.js?v=...')
+  //   load: load('./apps/chat/index.js')          ← 现在用这个（带版本号）
+  const loads = [
+    ...[...src.matchAll(/import\(\s*['"`]([^'"`$]+)/g)].map(m => m[1]),
+    ...[...src.matchAll(/\bload\(\s*['"]([^'"]+)['"]\s*\)/g)].map(m => m[1]),
+  ].filter(s => s.includes('/apps/'));
+
+  if (!loads.length) problems.push('ui/apps.js 里没有找到任何 App 入口');
+
+  for (const spec of new Set(loads)) {
     const target = resolve(dirname(appsFile), spec);
     if (!existsSync(target)) problems.push(`App 入口不存在: ${relative(ROOT, target)}`);
   }
-  notes.push(`App: ${loads.length} 个，全部动态 import`);
+  notes.push(`App: ${new Set(loads).size} 个，动态 import 带版本号`);
 
   // 契约：注册表 == apps/ 目录
   const dir = resolve(ROOT, 'ui/apps');
   if (existsSync(dir)) {
     const onDisk = readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
-    const registered = loads.map(s => s.replace(/^\.\/apps\//, '').replace(/\/index\.js$/, '').replace(/^\.\//, ''));
+    const registered = [...new Set(loads)].map(s => s.replace(/^\.\/apps\//, '').replace(/\/index\.js$/, ''));
     const missing = onDisk.filter(d => !registered.includes(d));
-    if (missing.length) notes.push(`apps/ 下有未注册的目录: ${missing.join(', ')}（不算错，只是提醒）`);
+    if (missing.length) notes.push(`apps/ 下有未注册的目录: ${missing.join(', ')}（只是提醒）`);
   }
 }
 

@@ -471,6 +471,15 @@ export async function mount(root, ctx) {
   let voiceData = null;
   try { voiceData = await api.voiceGet(); } catch { /* 没有也不影响别的 */ }
 
+  /**
+   * 重建"每个角色的声音"这一块。
+   *
+   * 注意：必须声明在 if/else 之外。之前写在 else 块里，refresh() 在块外
+   * 引用不到，报 "renderVoiceSection is not defined" —— 但被空 catch 吞了，
+   * 表现就是"换了卡，设置页纹丝不动"。
+   */
+  let renderVoiceSection = async () => {};
+
   if (!voiceData) {
     view.append(el('p', 'settings-note', '语音模块没加载起来，看看控制台有没有报错。'));
   } else {
@@ -702,45 +711,59 @@ export async function mount(root, ctx) {
     /* 角色音色 */
     section('每个角色的声音');
 
-    const SOURCE_LABEL = {
-      card: '当前卡',
-      story: '剧情里出现过',
-      manual: '手动加的',
-      voice: '已配音色',
-    };
+    // 这一块会整段重建：换角色卡时宿主会推 space 事件，外壳调 refresh()
+    const voiceSection = el('div', 'voice-section');
+    view.append(voiceSection);
 
-    view.append(el('p', 'settings-note', (voiceData.contacts?.length ?? 0) > 0
-      ? `只列「${voiceData.spaceName || '当前卡'}」里的人 —— 换角色卡会自动换一批，不是全酒馆的角色。`
-      : voiceData.hasSpace === false
-        ? '现在没有打开角色卡。先去酒馆里选一张卡，这里才会出现可以配音的人。'
-        : `「${voiceData.spaceName || '这张卡'}」里还没有认识的人。聊几轮，正文里说过话的人会自动出现在这里。`));
+    renderVoiceSection = async function rebuild() {
+      // 每次重建都重新问一次宿主：用户可能刚换卡
+      try { voiceData = await api.voiceGet(); } catch { /* 用旧的 */ }
 
-    const voiceList = el('div', 'voice-bind-list');
-    for (const person of voiceData.contacts ?? []) {
-      const name = person.name;
-      const row = el('div', 'field');
-      const head = el('div', 'field-head');
-      head.append(el('span', 'field-label', name));
-      if (person.source) head.append(el('span', `voice-src src-${person.source}`, SOURCE_LABEL[person.source] ?? ''));
-      row.append(head);
+      const SOURCE_LABEL = {
+        card: '当前卡',
+        story: '剧情里出现过',
+        manual: '手动加的',
+        voice: '已配音色',
+      };
 
-      const input = el('input', 'field-input');
-      input.type = 'text';
-      input.placeholder = '音色 id（留空 = 用上面的默认音色）';
-      input.value = voiceData.voices?.[name]?.voice ?? '';
-      input.addEventListener('change', async () => {
-        try {
-          const cur = voiceData.voices?.[name] ?? {};
-          await api.voiceBind(name, input.value
-            ? { ...cur, engine: cur.engine || voiceData.activeEngine, voice: input.value }
-            : null);
-          toast(`${name} 的音色已保存`);
-        } catch (e) { toast(e?.message ?? '失败'); }
-      });
-      row.append(input);
-      voiceList.append(row);
+      voiceSection.innerHTML = '';
+      const list = voiceData?.contacts ?? [];
+
+      voiceSection.append(el('p', 'settings-note', list.length
+        ? `只列「${voiceData.spaceName || '当前卡'}」里的人 —— 换角色卡会自动换一批，不是全酒馆的角色。`
+        : voiceData?.hasSpace === false
+          ? '现在没有打开角色卡。先去酒馆里选一张卡，这里才会出现可以配音的人。'
+          : `「${voiceData?.spaceName || '这张卡'}」里还没有认识的人。聊几轮，正文里说过话的人会自动出现在这里。`));
+
+      const voiceList = el('div', 'voice-bind-list');
+      for (const person of list) {
+        const name = person.name;
+        const row = el('div', 'field');
+        const head = el('div', 'field-head');
+        head.append(el('span', 'field-label', name));
+        if (person.source) head.append(el('span', `voice-src src-${person.source}`, SOURCE_LABEL[person.source] ?? ''));
+        row.append(head);
+
+        const input = el('input', 'field-input');
+        input.type = 'text';
+        input.placeholder = '音色 id（留空 = 用上面的默认音色）';
+        input.value = voiceData.voices?.[name]?.voice ?? '';
+        input.addEventListener('change', async () => {
+          try {
+            const cur = voiceData.voices?.[name] ?? {};
+            await api.voiceBind(name, input.value
+              ? { ...cur, engine: cur.engine || voiceData.activeEngine, voice: input.value }
+              : null);
+            toast(`${name} 的音色已保存`);
+          } catch (e) { toast(e?.message ?? '失败'); }
+        });
+        row.append(input);
+        voiceList.append(row);
+      }
+      voiceSection.append(voiceList);
     }
-    view.append(voiceList);
+
+    await renderVoiceSection();
 
     /* 缓存 */
     section('语音缓存');
@@ -790,5 +813,10 @@ export async function mount(root, ctx) {
 
   setTitle('设置');
 
-  return { title: '设置', back: () => false };
+  return {
+    title: '设置',
+    back: () => false,
+    /** 宿主推 space 事件（换了角色卡）时调用：只重建音色区，不打断别处的输入 */
+    refresh: () => { renderVoiceSection().catch(() => {}); },
+  };
 }

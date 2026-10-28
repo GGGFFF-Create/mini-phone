@@ -11,7 +11,9 @@
  *   back() 返回 true 表示"我处理了这一层，别退出 App"。
  */
 
-import { APPS, HOME, findApp } from './apps.js';
+// 版本号：从 iframe 地址的 ?v= 取，拼给下面的动态 import 做缓存失效
+const V = window.__MP_V || '';
+const { APPS, HOME, findApp } = await import(/* @vite-ignore */ `./apps.js?v=${encodeURIComponent(V)}`);
 
 /* ------------------------------------------------------------ 连接 */
 
@@ -245,7 +247,9 @@ window.__miniPhoneReceive = (type, payload = {}) => {
       state.settings = payload?.settings ?? state.settings;
       if (payload?.settings?.theme) document.body.dataset.theme = payload.settings.theme;
       renderHome();
-      current?.inst?.refresh?.();
+      // 当前开着 App 的话，让 App 自己决定要不要刷（设置页只重建音色区）
+      try { current?.inst?.refresh?.(); }
+      catch (e) { console.warn('[phone] refresh 失败：', e?.message); }
       break;
 
     case 'message': {
@@ -333,6 +337,14 @@ async function boot() {
   setInterval(tick, 20_000);
   bindChrome();
   showLayer('lock');
+
+  // 调试口：控制台里能看到壳的内部状态
+  window.__MP_SHELL = {
+    get current() { return current ? { appId: current.appId, hasRefresh: typeof current.inst?.refresh === 'function' } : null; },
+    get layer() { return document.body.dataset.layer; },
+    get state() { return { space: state.space?.name, booted: state.booted }; },
+  };
+
   await loadAll();
 
   // 告诉宿主"我准备好了"
