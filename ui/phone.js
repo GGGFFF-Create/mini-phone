@@ -306,7 +306,8 @@ function tick() {
 
 function bindChrome() {
   $('#btn-back')?.addEventListener('click', goBack);
-  $('#lock')?.addEventListener('click', () => showLayer('home'));
+  // 锁屏整块可点：id 必须是 layer-lock（之前写成 #lock，导致点了没反应）
+  $('#layer-lock')?.addEventListener('click', () => showLayer('home'));
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.body.dataset.layer === 'app') goBack();

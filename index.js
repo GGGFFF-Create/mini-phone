@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.4.1';
+const VERSION = '0.5.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -545,18 +545,155 @@ function unmountEntry() {
   document.getElementById('miniPhone-item')?.remove();
 }
 
+/**
+ * 浮动窗，不是模态对话框。
+ *
+ * 为什么不用 <dialog> + showModal()：
+ * 那会给整个页面盖一层遮罩，正文看不见也点不了 —— 而这个小手机的用途
+ * 恰恰是"边看正文边用"。所以改成一个 fixed 定位的浮层：
+ * 可拖、可缩放、可收成小球，位置记在 localStorage。
+ */
+
+const LAYOUT_KEY = 'miniPhone.layout';
+const FLOAT_W = 390;
+const FLOAT_H = 760;
+
+function loadLayout() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+    if (raw && Number.isFinite(raw.w) && Number.isFinite(raw.h)) return raw;
+  } catch { /* 用默认值 */ }
+  return null;
+}
+
+function saveLayout() {
+  if (!panel) return;
+  const r = panel.getBoundingClientRect();
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+      left: Math.round(r.left), top: Math.round(r.top),
+      w: Math.round(r.width), h: Math.round(r.height),
+      minimized: panel.classList.contains('mp-min'),
+    }));
+  } catch { /* 忽略 */ }
+}
+
+function clampToViewport(left, top, w, h) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  return {
+    left: Math.min(Math.max(8, left), Math.max(8, vw - w - 8)),
+    top: Math.min(Math.max(8, top), Math.max(8, vh - h - 8)),
+  };
+}
+
 function buildPanel() {
   if (panel) return panel;
-  panel = document.createElement('dialog');
-  panel.id = 'miniPhone-panel';
-  panel.setAttribute('aria-label', '小手机');
+
+  panel = document.createElement('div');
+  panel.id = 'miniPhone-float';
+  panel.className = 'mp-float';
+  panel.innerHTML = `
+    <div class="mp-bar" data-drag>
+      <span class="mp-bar-dot"></span>
+      <span class="mp-bar-title">小手机</span>
+      <span class="mp-bar-acts">
+        <button type="button" data-act="min" title="收起">—</button>
+        <button type="button" data-act="close" title="关闭">×</button>
+      </span>
+    </div>
+    <div class="mp-body"></div>
+    <div class="mp-grip" data-grip title="拖动调整大小"></div>
+  `;
+
   iframe = document.createElement('iframe');
   iframe.title = '小手机';
   // ?v= 版本号：更新后浏览器会重新拉 ui 下的文件。不带它，用户刷新也看不到改动。
   iframe.src = new URL(`ui/index.html?v=${VERSION}`, BASE).href;
   iframe.setAttribute('allow', 'microphone; autoplay');
-  panel.append(iframe);
-  panel.addEventListener('close', () => bridge?.post('visibility', { open: false }));
+  panel.querySelector('.mp-body').append(iframe);
+
+  // 初始位置：靠右下，不挡正文中间
+  const saved = loadLayout();
+  const w = saved?.w ?? FLOAT_W;
+  const h = saved?.h ?? Math.min(FLOAT_H, window.innerHeight - 40);
+  const pos = clampToViewport(
+    saved?.left ?? window.innerWidth - w - 32,
+    saved?.top ?? Math.max(20, (window.innerHeight - h) / 2),
+    w, h,
+  );
+  Object.assign(panel.style, {
+    left: `${pos.left}px`, top: `${pos.top}px`,
+    width: `${w}px`, height: `${h}px`,
+  });
+  if (saved?.minimized) panel.classList.add('mp-min');
+
+  // 按钮
+  panel.querySelector('[data-act="close"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closePanel();
+  });
+  panel.querySelector('[data-act="min"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMinimize();
+  });
+
+  // 拖动（只在标题栏上，且不点到按钮）
+  const bar = panel.querySelector('[data-drag]');
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    e.preventDefault();
+    const r = panel.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
+    bar.setPointerCapture(e.pointerId);
+
+    const move = (ev) => {
+      const p = clampToViewport(
+        start.left + ev.clientX - start.x,
+        start.top + ev.clientY - start.y,
+        panel.offsetWidth, panel.offsetHeight,
+      );
+      panel.style.left = `${p.left}px`;
+      panel.style.top = `${p.top}px`;
+    };
+    const up = () => {
+      bar.removeEventListener('pointermove', move);
+      bar.removeEventListener('pointerup', up);
+      saveLayout();
+    };
+    bar.addEventListener('pointermove', move);
+    bar.addEventListener('pointerup', up);
+  });
+
+  // 缩放（右下角把手）
+  const grip = panel.querySelector('[data-grip]');
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY, w: panel.offsetWidth, h: panel.offsetHeight };
+    grip.setPointerCapture(e.pointerId);
+
+    const move = (ev) => {
+      const w2 = Math.max(300, Math.min(720, start.w + ev.clientX - start.x));
+      const h2 = Math.max(420, Math.min(window.innerHeight - 20, start.h + ev.clientY - start.y));
+      panel.style.width = `${w2}px`;
+      panel.style.height = `${h2}px`;
+    };
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      saveLayout();
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  });
+
+  // 双击标题栏回到默认位置
+  bar.addEventListener('dblclick', () => {
+    const w2 = FLOAT_W, h2 = Math.min(FLOAT_H, window.innerHeight - 40);
+    const p = clampToViewport(window.innerWidth - w2 - 32, Math.max(20, (window.innerHeight - h2) / 2), w2, h2);
+    Object.assign(panel.style, { left: `${p.left}px`, top: `${p.top}px`, width: `${w2}px`, height: `${h2}px` });
+    saveLayout();
+  });
+
   document.body.append(panel);
 
   // 同源直调：iframe 里拿 parent.__miniPhone 就能用
@@ -565,9 +702,18 @@ function buildPanel() {
   return panel;
 }
 
+function toggleMinimize() {
+  if (!panel) return;
+  panel.classList.toggle('mp-min');
+  saveLayout();
+}
+
 function openPanel() {
   buildPanel();
-  if (!panel.open) { panel.showModal(); }
+  panel.classList.remove('mp-hidden');
+  if (panel.classList.contains('mp-min')) panel.classList.remove('mp-min');
+  saveLayout();
+  bridge?.post('visibility', { open: true });
   // 等 iframe 就绪再推数据
   const push = () => bridge?.post('init', spaceInfo());
   if (iframe?.contentWindow?.__miniPhoneReady) push();
@@ -575,7 +721,10 @@ function openPanel() {
 }
 
 function closePanel() {
-  if (panel?.open) panel.close();
+  if (!panel) return;
+  panel.classList.add('mp-hidden');
+  bridge?.post('visibility', { open: false });
+  saveLayout();
 }
 
 function spaceInfo() {

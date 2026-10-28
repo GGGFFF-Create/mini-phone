@@ -59,7 +59,7 @@ const tx = async (mode, work, indexedDB) => {
   });
 };
 
-const wrap = (fn) => new Promise((resolve) => {
+const wrapIdb = (fn) => new Promise((resolve) => {
   const r = fn();
   r.onsuccess = () => resolve(r.result ?? null);
   r.onerror = () => resolve(null);
@@ -124,7 +124,7 @@ export function createAudioCache({ limitBytes = 200 * 1024 * 1024, indexedDB } =
 
   async function total() {
     if (counted) return counted;
-    const rows = await tx('readonly', (s, done) => wrap(s.getAll()).then(r => done(r ?? [])), indexedDB)
+    const rows = await tx('readonly', (s, done) => wrapIdb(() => s.getAll()).then(r => done(r ?? [])), indexedDB)
       .catch(() => []);
     counted = {
       bytes: rows.reduce((n, r) => n + (r.size ?? 0), 0),
@@ -140,7 +140,7 @@ export function createAudioCache({ limitBytes = 200 * 1024 * 1024, indexedDB } =
     if (bytes <= cap) return 0;
 
     const target = Math.floor(cap * 0.8);
-    const rows = await tx('readonly', (s, done) => wrap(s.getAll()).then(r => done(r ?? [])), indexedDB)
+    const rows = await tx('readonly', (s, done) => wrapIdb(() => s.getAll()).then(r => done(r ?? [])), indexedDB)
       .catch(() => []);
     rows.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
 
@@ -161,7 +161,7 @@ export function createAudioCache({ limitBytes = 200 * 1024 * 1024, indexedDB } =
     async get(key) {
       if (hot.has(key)) return hot.get(key);
 
-      const row = await tx('readonly', (s, done) => wrap(s.get(key)).then(r => done(r)), indexedDB)
+      const row = await tx('readonly', (s, done) => wrapIdb(() => s.get(key)).then(r => done(r)), indexedDB)
         .catch(() => null);
       if (!row?.blob) return null;
 
@@ -190,7 +190,7 @@ export function createAudioCache({ limitBytes = 200 * 1024 * 1024, indexedDB } =
 
     async has(key) {
       if (hot.has(key)) return true;
-      const row = await tx('readonly', (s, done) => wrap(s.getKey(key)).then(r => done(r)), indexedDB)
+      const row = await tx('readonly', (s, done) => wrapIdb(() => s.getKey(key)).then(r => done(r)), indexedDB)
         .catch(() => null);
       return !!row;
     },
