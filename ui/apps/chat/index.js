@@ -21,6 +21,45 @@ const timeOf = (ts) => {
   return today ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()}`;
 };
 
+/**
+ * 消息气泡上的声波按钮。
+ * 只管状态和调用，真正的合成在宿主那边（它才认识引擎配置）。
+ */
+function sayButton(message) {
+  const btn = el('button', 'bubble-say');
+  btn.type = 'button';
+  btn.dataset.state = 'idle';
+  btn.setAttribute('aria-label', `朗读 ${message.from} 的消息`);
+  btn.append(el('i'), el('i'), el('i'));
+
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const bound = window.parent === window ? null : (window.parent.__miniPhone?.bind(window) ?? null);
+    if (btn.dataset.state === 'loading' || btn.dataset.state === 'playing') {
+      try { await bound?.voiceStop?.(); } catch { /* 忽略 */ }
+      btn.dataset.state = 'idle';
+      return;
+    }
+    if (!bound) { btn.dataset.state = 'error'; btn.title = '没有连上酒馆'; return; }
+
+    btn.dataset.state = 'loading';
+    try {
+      await bound.voiceSpeak({
+        role: message.from,
+        emotion: message.meta?.emotion ?? '',
+        text: message.text,
+        translation: message.text,
+      });
+      btn.dataset.state = 'done';
+    } catch (err) {
+      btn.dataset.state = 'error';
+      btn.title = String(err?.message ?? err);
+    }
+  });
+
+  return btn;
+}
+
 /** 气泡内容按类型渲染。新类型只要在这里加一个分支。 */
 function bubbleBody(msg) {
   const wrap = el('span', 'bubble-body');
@@ -79,7 +118,6 @@ function bubbleBody(msg) {
 
 export async function mount(root, ctx) {
   const { api, toast, setTitle } = ctx;
-
   let threads = [];
   let active = null;            // 当前打开的会话
   let typing = false;
@@ -171,6 +209,12 @@ export async function mount(root, ctx) {
       const row = el('div', `bubble-row ${mine ? 'mine' : 'theirs'}`);
       const bubble = el('div', `bubble ${mine ? 'mine' : 'theirs'}`);
       bubble.append(bubbleBody(m));
+
+      // 对方发的、有文字的，给个声波按钮
+      if (!mine && m.text && m.kind !== 'moment') {
+        bubble.append(sayButton(m));
+      }
+
       bubble.append(el('span', 'bubble-time', timeOf(m.at)));
       row.append(bubble);
       scroll.append(row);

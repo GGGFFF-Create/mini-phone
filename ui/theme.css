@@ -310,6 +310,42 @@ html, body {
   text-align: right;
 }
 
+/* 气泡上的声波按钮 */
+.bubble-say {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-left: 5px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: .55;
+  vertical-align: -2px;
+}
+.bubble-say:hover { opacity: 1; background: rgba(128, 140, 160, .18); }
+.bubble-say > i {
+  display: block;
+  width: 2px;
+  height: 7px;
+  border-radius: 1px;
+  background: currentColor;
+}
+.bubble-say[data-state='loading'] { opacity: .8; animation: blink 1s infinite; }
+.bubble-say[data-state='playing'] > i:nth-child(1) { animation: sayBar .62s ease-in-out infinite; }
+.bubble-say[data-state='playing'] > i:nth-child(2) { animation: sayBar .52s ease-in-out infinite .09s; }
+.bubble-say[data-state='playing'] > i:nth-child(3) { animation: sayBar .58s ease-in-out infinite .18s; }
+.bubble-say[data-state='error'] { color: var(--danger); opacity: 1; }
+
+@keyframes sayBar {
+  0%, 100% { transform: scaleY(.55); }
+  50% { transform: scaleY(1.7); }
+}
+
 .bubble.typing { display: flex; gap: 4px; align-items: center; padding: 12px 14px; }
 .bubble.typing .dot {
   width: 6px; height: 6px; border-radius: 50%;
@@ -566,6 +602,38 @@ html, body {
 .field-input:focus { border-color: var(--accent); }
 
 .field-range { width: 100%; accent-color: var(--accent); }
+
+.field-textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: 12px/1.5 ui-monospace, 'SF Mono', Consolas, monospace;
+  resize: vertical;
+  outline: none;
+}
+.field-textarea:focus { border-color: var(--accent); }
+
+.engine-editor {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin: 6px 0 4px;
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.voice-bind-list { display: flex; flex-direction: column; }
+
+select.field-input {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+                    linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 14px, calc(100% - 11px) 14px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 30px;
+}
 
 .field-row input[type='checkbox'] {
   width: 17px; height: 17px;

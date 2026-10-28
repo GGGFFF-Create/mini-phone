@@ -1,4 +1,9 @@
-/* 宿主侧样式：只负责"手机这个窗口"在酒馆页面上怎么摆 */
+/* 宿主侧样式：手机窗口 + 正文里的声波按钮 */
+
+/* ============================================================
+   手机窗口
+   ============================================================ */
+
 #miniPhone-panel {
   padding: 0;
   border: 1px solid var(--SmartThemeBorderColor, #2a2f3a);
@@ -37,8 +42,107 @@
   }
 }
 
-#miniPhone-menu-item i,
-#miniPhone-wand i {
-  width: 1.1em;
-  text-align: center;
+#miniPhone-item i { width: 1.1em; text-align: center; }
+
+/* ============================================================
+   正文里的声波按钮
+   
+   这些元素由 messageFormatter 钩子插进正文，所以样式必须写在宿主侧，
+   不能放 iframe 里 —— iframe 的 CSS 作用不到酒馆正文。
+   ============================================================ */
+
+.mp-line {
+  /* 保持行内，不破坏正文排版 */
+  display: inline;
+}
+
+.mp-tr {
+  /* 译文本身就是普通文字，不用额外装饰 */
+}
+
+.mp-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0 1px 0 3px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  vertical-align: -3px;
+  opacity: .5;
+  transition: opacity .15s ease, background-color .15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mp-play:hover {
+  opacity: 1;
+  background: var(--SmartThemeQuoteColor, rgba(128, 140, 160, .18));
+}
+
+.mp-play:disabled { cursor: default; }
+
+/* 三根小竖条 */
+.mp-play > i {
+  display: block;
+  width: 2px;
+  height: 7px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+/* 加载中：整体呼吸 */
+.mp-play[data-state='loading'] {
+  opacity: .9;
+  animation: mpPulse 1s ease-in-out infinite;
+}
+.mp-play[data-state='loading'] > i {
+  height: 3px;
+  opacity: .5;
+}
+
+/* 播放中：三根条跳，模拟声波 */
+.mp-play[data-state='playing'] { opacity: 1; }
+.mp-play[data-state='playing'] > i:nth-child(1) { animation: mpBar .62s ease-in-out infinite; }
+.mp-play[data-state='playing'] > i:nth-child(2) { animation: mpBar .52s ease-in-out infinite .09s; }
+.mp-play[data-state='playing'] > i:nth-child(3) { animation: mpBar .58s ease-in-out infinite .18s; }
+
+/* 播放过：留一个淡淡的痕迹，提示"这句有声音" */
+.mp-play[data-state='done'] { opacity: .72; }
+
+/* 出错：变红，鼠标悬停能看到原因（tooltip 由 JS 设 title） */
+.mp-play[data-state='error'] {
+  opacity: 1;
+  color: var(--SmartThemeEmColor, #e05a5a);
+}
+
+@keyframes mpBar {
+  0%, 100% { transform: scaleY(.55); }
+  50% { transform: scaleY(1.6); }
+}
+
+@keyframes mpPulse {
+  0%, 100% { opacity: .45; }
+  50% { opacity: 1; }
+}
+
+/* 尊重用户的"减少动效"设置 */
+@media (prefers-reduced-motion: reduce) {
+  .mp-play[data-state='playing'] > i,
+  .mp-play[data-state='loading'] {
+    animation: none !important;
+  }
+  .mp-play[data-state='playing'] > i { height: 8px; }
+}
+
+/* 深色主题下稍微亮一点，别在深色正文里看不见 */
+@media (prefers-color-scheme: dark) {
+  .mp-play { opacity: .62; }
+  .mp-play:hover { opacity: 1; }
 }

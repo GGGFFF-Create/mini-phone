@@ -192,6 +192,117 @@ export function plainLines(message, protocol) {
   return out + src.slice(at);
 }
 
+/* --------------------------------------------- 两阶段渲染（给正文用） */
+
+/**
+ * 为什么需要两阶段：
+ *
+ * 酒馆的正文渲染是「原始文字 → 别的插件的正则美化 → 上屏」。
+ * 你要是在第一步就插 <button>，被后面那层正则一包，按钮可能被切成两半、
+ * 被转义掉、或者落进代码块里点了没反应。
+ *
+ * 所以：
+ *   阶段一（正则之前）：只打"看不见的标记"。用 Unicode 私用区字符，
+ *                        正则和 markdown 把它们当普通文字，不会破坏结构。
+ *   阶段二（正则之后）：把标记换成真按钮。这时卡片已经成型，插进去安全。
+ *   阶段三（兜底）：如果有按钮落进了代码块/整页 HTML，拆掉它只留文字。
+ */
+
+const MARK_OPEN = '\uE000';   // 标记开始
+const MARK_MID = '\uE001';    // 行号和译文的分界
+const MARK_CLOSE = '\uE002';  // 标记结束
+const MARK_RE = /\uE000([0-9a-f]{4})\uE001([\s\S]*?)\uE002/g;
+
+/** 这条消息的解析结果，阶段二要用。key 是 token（消息 id + 渲染次数）。 */
+const stage = new Map();
+
+/**
+ * 阶段一：把每句台词换成标记 + 译文。
+ * 同时把解析结果存起来，阶段二按行号取。
+ */
+export function markLines(message, protocol, { token = '' } = {}) {
+  const src = String(message ?? '');
+  const lines = parseLines(src, protocol);
+  if (!lines.length) return src;
+
+  stage.set(token, { lines, at: Date.now() });
+  // 只保留最近 40 条，避免长时间开着页面越攒越多
+  if (stage.size > 40) stage.delete(stage.keys().next().value);
+
+  let out = '';
+  let at = 0;
+  lines.forEach((line, i) => {
+    out += src.slice(at, line.trStart);
+    const idx = i.toString(16).padStart(4, '0');
+    out += MARK_OPEN + idx + MARK_MID + line.translation + MARK_CLOSE;
+    at = line.end;
+  });
+  return out + src.slice(at);
+}
+
+/**
+ * 阶段二：标记 → 可点的按钮。
+ * regex 已经跑完，现在插 DOM 是安全的。
+ */
+export function buttonsFromMarks(text, { token = '' } = {}) {
+  const src = String(text ?? '');
+  if (!src.includes(MARK_OPEN)) return src;
+
+  const record = stage.get(token);
+  const lines = record?.lines ?? [];
+
+  return src.replace(MARK_RE, (whole, hex, translation) => {
+    const i = parseInt(hex, 16);
+    const line = lines[i];
+    const text2 = String(translation ?? '').trim();
+    if (!text2) return whole;
+
+    // 数据丢了（比如刷新后）也要能显示，只是按钮不带信息
+    const attrs = [
+      'class="mp-line"',
+      `data-i="${i}"`,
+      line ? `data-role="${esc(line.role)}"` : '',
+      line ? `data-emotion="${esc(line.emotion)}"` : '',
+      line ? `data-text="${esc(line.text)}"` : '',
+      `data-token="${esc(token)}"`,
+    ].filter(Boolean).join(' ');
+
+    return `<span ${attrs}><span class="mp-tr">“${esc(text2)}”</span>` +
+      `<button type="button" class="mp-play" data-act="say" aria-label="朗读这句台词">` +
+      `<i></i><i></i><i></i></button></span>`;
+  });
+}
+
+/**
+ * 阶段三：兜底清理。
+ * 落进代码块或整页 HTML 里的按钮，插件够不着，拆掉只留文字。
+ */
+export function stripWaves(text) {
+  const src = String(text ?? '');
+  if (!/<span class="mp-line"/.test(src)) return src;
+
+  return src.replace(
+    /```[\s\S]*?(?:```|$)|<(?:!doctype\s+html|html)\b[\s\S]*?(?:<\/html\s*>|$)/gi,
+    (block) => block
+      .replace(/<span class="mp-line"[^>]*><span class="mp-tr">([\s\S]*?)<\/span>\s*<button[\s\S]*?<\/button><\/span>/g, '$1')
+      .replace(/\uE000[0-9a-f]{4}\uE001([\s\S]*?)\uE002/g, '$1'),
+  );
+}
+
+/** 清掉所有标记（语音关掉、或者渲染失败时用） */
+export function unmark(text) {
+  return String(text ?? '')
+    .replace(/\uE000[0-9a-f]{4}\uE001([\s\S]*?)\uE002/g, '$1')
+    .replace(MARK_OPEN, '')
+    .replace(MARK_MID, '')
+    .replace(MARK_CLOSE, '');
+}
+
+/** 渲染记录清理（切聊天时调） */
+export function clearStage() {
+  stage.clear();
+}
+
 /* ------------------------------------------------------------- 诊断 */
 
 /**

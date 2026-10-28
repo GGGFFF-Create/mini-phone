@@ -68,6 +68,34 @@ export async function mount(root, ctx) {
     return { wrap, input };
   };
 
+  /** JSON 编辑框：请求头和请求体用它，让用户能改任何字段 */
+  const jsonEditor = (label, value, onChange, rows = 4) => {
+    const wrap = el('div', 'field');
+    wrap.append(el('span', 'field-label', label));
+
+    const ta = el('textarea', 'field-textarea');
+    ta.rows = rows;
+    ta.spellcheck = false;
+    ta.value = JSON.stringify(value ?? {}, null, 2);
+
+    const hint = el('span', 'field-hint', '');
+    ta.addEventListener('change', () => {
+      try {
+        const parsed = JSON.parse(ta.value);
+        if (!parsed || typeof parsed !== 'object') throw new Error('要是对象');
+        onChange(parsed);
+        hint.textContent = '已保存';
+        hint.style.color = '';
+      } catch (e) {
+        hint.textContent = `JSON 格式不对：${e.message}`;
+        hint.style.color = 'var(--danger)';
+      }
+    });
+
+    wrap.append(ta, hint);
+    return wrap;
+  };
+
   /* ------------------------------------------------------ 模型 */
 
   section('模型接口');
@@ -247,6 +275,302 @@ export async function mount(root, ctx) {
   });
 
   view.append(mOn.wrap, mEvery.wrap, saveMoments);
+
+  /* ------------------------------------------------------ 语音 */
+
+  section('语音');
+
+  let voiceData = null;
+  try { voiceData = await api.voiceGet(); } catch { /* 没有也不影响别的 */ }
+
+  if (!voiceData) {
+    view.append(el('p', 'settings-note', '语音模块没加载起来，看看控制台有没有报错。'));
+  } else {
+    view.append(el('p', 'settings-note',
+      '语音走独立接口，和聊天模型分开配。点正文里的声波按钮就会念。'));
+
+    /* 总开关 */
+    const vOn = toggle({ label: '开启动语音', checked: voiceData.enabled, hint: '关掉之后正文不显示声波按钮' });
+    vOn.input.addEventListener('change', async () => {
+      try { voiceData = { ...voiceData, ...(await api.voiceSave({ enabled: vOn.input.checked })) }; }
+      catch (e) { toast(e?.message ?? '失败'); }
+    });
+    view.append(vOn.wrap);
+
+    /* 引擎选择 + 新建 */
+    const engineSelect = el('select', 'field-input');
+    for (const e of voiceData.engines) {
+      const opt = el('option', '', e.name);
+      opt.value = e.id;
+      if (e.id === voiceData.activeEngine) opt.selected = true;
+      engineSelect.append(opt);
+    }
+    engineSelect.addEventListener('change', async () => {
+      try {
+        voiceData = { ...voiceData, ...(await api.voiceSave({ activeEngine: engineSelect.value })) };
+        renderEngineEditor();
+      } catch (e) { toast(e?.message ?? '失败'); }
+    });
+
+    const engineRow = el('div', 'field');
+    engineRow.append(el('span', 'field-label', '当前引擎'));
+    engineRow.append(engineSelect);
+
+    const newBtn = el('button', 'pill-btn', '＋ 新建自定义引擎');
+    newBtn.type = 'button';
+    newBtn.addEventListener('click', async () => {
+      try {
+        const created = await api.voiceEngineCreate('我的引擎');
+        voiceData = await api.voiceGet();
+        voiceData.activeEngine = created.id;
+        await api.voiceSave({ activeEngine: created.id });
+        renderEngineEditor();
+        toast('建好了，往下填字段');
+      } catch (e) { toast(e?.message ?? '失败'); }
+    });
+
+    const engineHint = el('span', 'field-hint', '');
+    engineRow.append(newBtn, engineHint);
+    view.append(engineRow);
+
+    /* 引擎编辑区 */
+    const editor = el('div', 'engine-editor');
+    view.append(editor);
+
+    function renderEngineEditor() {
+      editor.innerHTML = '';
+      const eng = voiceData.engines.find(e => e.id === voiceData.activeEngine);
+      if (!eng) { editor.append(el('p', 'settings-note', '没有这个引擎')); return; }
+
+      const isBrowser = eng.kind === 'browser';
+
+      if (eng.note) editor.append(el('p', 'settings-note', eng.note));
+
+      const mk = (label, key, opts = {}) => {
+        const f = field({
+          label,
+          value: eng[key] ?? '',
+          type: opts.type ?? 'text',
+          placeholder: opts.placeholder ?? '',
+          hint: opts.hint ?? '',
+        });
+        f.input.addEventListener('change', () => saveField(key, f.input.value));
+        editor.append(f.wrap);
+        return f;
+      };
+
+      if (!isBrowser) {
+        mk('接口根地址', 'base', { placeholder: 'https://api.xxx.com/v1', hint: '下面的地址里可以用 {{base}} 引用它' });
+        mk('API Key', 'key', { type: 'password', placeholder: '留空则不修改' });
+        mk('模型名', 'model', { placeholder: 'tts-1 / s1 / speech-02-hd' });
+
+        const ep = field({
+          label: '请求地址（endpoint）',
+          value: eng.endpoint ?? '',
+          placeholder: '{{base}}/audio/speech',
+          hint: '可以用 {{base}} {{key}} {{model}} {{voice}} {{text}} {{language}}',
+        });
+        ep.input.addEventListener('change', () => saveField('endpoint', ep.input.value));
+        editor.append(ep.wrap);
+
+        /* 请求头（JSON） */
+        editor.append(jsonEditor('请求头（JSON）', eng.headers, (v) => saveField('headers', v)));
+
+        /* 请求体（JSON）—— 这里是"不预制"的极致：整段可改 */
+        const bodyHint = el('p', 'settings-note',
+          '请求体里必须有 {{text}}，引擎才知道要念什么。voice / model 也可以用变量。');
+        editor.append(bodyHint);
+        editor.append(jsonEditor('请求体（JSON）', eng.body, (v) => saveField('body', v), 6));
+
+        /* 响应类型 */
+        const respSelect = el('select', 'field-input');
+        for (const [value, label] of [
+          ['audio', '响应体就是音频（最常见）'],
+          ['json-base64', 'JSON 里带 base64'],
+          ['json-url', 'JSON 里带音频链接'],
+        ]) {
+          const o = el('option', '', label);
+          o.value = value;
+          if (eng.response === value) o.selected = true;
+          respSelect.append(o);
+        }
+        respSelect.addEventListener('change', () => saveField('response', respSelect.value));
+        const respWrap = el('div', 'field');
+        respWrap.append(el('span', 'field-label', '响应格式'));
+        respWrap.append(respSelect);
+        editor.append(respWrap);
+
+        if (eng.response !== 'audio') {
+          const p = field({
+            label: '从哪个字段取音频',
+            value: eng.responsePath ?? '',
+            placeholder: 'data.audio',
+            hint: '支持点号路径，比如 data.audio / result.0.url',
+          });
+          p.input.addEventListener('change', () => saveField('responsePath', p.input.value));
+          editor.append(p.wrap);
+        }
+
+        /* 情绪模式 */
+        const emoSelect = el('select', 'field-input');
+        for (const [value, label] of [
+          ['none', '不处理（引擎不支持情绪）'],
+          ['bracket', '[happy] 台词'],
+          ['paren', '(happy) 台词'],
+        ]) {
+          const o = el('option', '', label);
+          o.value = value;
+          if (eng.emotion === value) o.selected = true;
+          emoSelect.append(o);
+        }
+        emoSelect.addEventListener('change', () => saveField('emotion', emoSelect.value));
+        const emoWrap = el('div', 'field');
+        emoWrap.append(el('span', 'field-label', '情绪怎么塞进文本'));
+        emoWrap.append(emoSelect);
+        emoWrap.append(el('span', 'field-hint', '中文情绪会先翻成英文（开心 → happy）'));
+        editor.append(emoWrap);
+
+        const transToggle = toggle({ label: '中文情绪翻成英文', checked: eng.emotionTranslate !== false });
+        transToggle.input.addEventListener('change', () => saveField('emotionTranslate', transToggle.input.checked));
+        editor.append(transToggle.wrap);
+      }
+
+      /* 默认音色 */
+      const vf = field({
+        label: isBrowser ? '系统声音名（留空用默认）' : '默认音色 id',
+        value: eng.voice ?? '',
+        placeholder: isBrowser ? '留空即可' : 'alloy / reference_id / voice_id',
+        hint: '角色没单独配的时候用这个',
+      });
+      vf.input.addEventListener('change', () => saveField('voice', vf.input.value));
+      editor.append(vf.wrap);
+
+      /* 测试 */
+      const testRow = el('div', 'field field-row');
+      const tBtn = el('button', 'pill-btn', '测试这个引擎');
+      tBtn.type = 'button';
+      const tOut = el('span', 'field-hint', '');
+      testRow.append(tBtn, tOut);
+      tBtn.addEventListener('click', async () => {
+        tBtn.disabled = true;
+        tOut.textContent = '测试中…';
+        try {
+          const r = await api.voiceTest(eng.id);
+          tOut.textContent = r.ok
+            ? `通了（${r.ms ?? 0}ms${r.bytes ? `，${Math.round(r.bytes / 1024)}KB` : ''}${r.note ? `，${r.note}` : ''}）`
+            : `不通：${r.error}`;
+        } catch (e) {
+          tOut.textContent = `出错：${e?.message ?? e}`;
+        } finally { tBtn.disabled = false; }
+      });
+      editor.append(testRow);
+
+      /* 删除 / 恢复 */
+      const actionRow = el('div', 'field field-row');
+      if (!isBrowser) {
+        const reset = el('button', 'pill-btn', '恢复默认值');
+        reset.type = 'button';
+        reset.addEventListener('click', async () => {
+          try {
+            const tpl = await api.voiceTemplate(eng.id);
+            if (!tpl) { toast('这个引擎没有内置模板'); return; }
+            await api.voiceEngineSave(eng.id, tpl);
+            voiceData = await api.voiceGet();
+            renderEngineEditor();
+            toast('已恢复');
+          } catch (e) { toast(e?.message ?? '失败'); }
+        });
+        actionRow.append(reset);
+      }
+      if (eng.id.startsWith('custom_')) {
+        const del = el('button', 'pill-btn', '删除这个引擎');
+        del.type = 'button';
+        del.addEventListener('click', async () => {
+          try {
+            await api.voiceEngineDelete(eng.id);
+            voiceData = await api.voiceGet();
+            voiceData.activeEngine = 'openai';
+            await api.voiceSave({ activeEngine: 'openai' });
+            renderEngineEditor();
+            toast('已删除');
+          } catch (e) { toast(e?.message ?? '失败'); }
+        });
+        actionRow.append(del);
+      }
+      editor.append(actionRow);
+
+      async function saveField(key, value) {
+        try {
+          await api.voiceEngineSave(eng.id, { [key]: value });
+          eng[key] = value;
+          engineHint.textContent = '已保存';
+          setTimeout(() => { engineHint.textContent = ''; }, 1200);
+        } catch (e) { toast(e?.message ?? '保存失败'); }
+      }
+    }
+
+    renderEngineEditor();
+
+    /* 角色音色 */
+    section('每个角色的声音');
+    view.append(el('p', 'settings-note',
+      '不配的话用上面的默认音色。配了之后这个角色说台词就用它。'));
+
+    const voiceList = el('div', 'voice-bind-list');
+    for (const name of voiceData.contacts ?? []) {
+      const row = el('div', 'field');
+      const head = el('div', 'field-head');
+      head.append(el('span', 'field-label', name));
+      row.append(head);
+
+      const input = el('input', 'field-input');
+      input.type = 'text';
+      input.placeholder = '音色 id（留空 = 用默认）';
+      input.value = voiceData.voices?.[name]?.voice ?? '';
+      input.addEventListener('change', async () => {
+        try {
+          const cur = voiceData.voices?.[name] ?? {};
+          await api.voiceBind(name, input.value
+            ? { ...cur, engine: cur.engine || voiceData.activeEngine, voice: input.value }
+            : null);
+          toast(`${name} 的音色已保存`);
+        } catch (e) { toast(e?.message ?? '失败'); }
+      });
+      row.append(input);
+      voiceList.append(row);
+    }
+    if (!(voiceData.contacts ?? []).length) {
+      voiceList.append(el('p', 'settings-note', '还没有联系人（在酒馆里开一张角色卡就有了）'));
+    }
+    view.append(voiceList);
+
+    /* 缓存 */
+    section('语音缓存');
+    const cacheInfo = el('p', 'settings-note', '统计中…');
+    view.append(cacheInfo);
+
+    const refreshCache = async () => {
+      try {
+        const s = await api.voiceStats();
+        const mb = (n) => (n / 1024 / 1024).toFixed(1);
+        cacheInfo.textContent = `已存 ${s.count ?? 0} 条，${mb(s.bytes ?? 0)} MB / 上限 ${mb(s.limit ?? 0)} MB`;
+      } catch { cacheInfo.textContent = '读不到缓存统计'; }
+    };
+    refreshCache();
+
+    const cacheRow = el('div', 'field field-row');
+    const clearBtn = el('button', 'pill-btn', '清空语音缓存');
+    clearBtn.type = 'button';
+    clearBtn.addEventListener('click', async () => {
+      try { await api.voiceClearCache(); await refreshCache(); toast('已清空'); }
+      catch (e) { toast(e?.message ?? '失败'); }
+    });
+    const refreshBtn = el('button', 'pill-btn', '刷新');
+    refreshBtn.type = 'button';
+    refreshBtn.addEventListener('click', refreshCache);
+    cacheRow.append(clearBtn, refreshBtn);
+    view.append(cacheRow);
+  }
 
   /* ------------------------------------------------------ 外观 */
 

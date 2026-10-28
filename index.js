@@ -10,13 +10,14 @@
  * 然后按 manifest.hooks 调用 enable / disable / dispose。hook 有 5 秒预算。
  */
 
-import { parseLines, renderLines, plainLines, diagnose, speechRule, KEEP_REPLY, protocolFromTemplate, DEFAULT_PROTOCOL } from './core/protocol.js';
+import { parseLines, renderLines, plainLines, diagnose, speechRule, KEEP_REPLY, protocolFromTemplate, DEFAULT_PROTOCOL, markLines, buttonsFromMarks, stripWaves, unmark, clearStage } from './core/protocol.js';
 import { extractPhone, hasPhone, phoneRule } from './core/phone.js';
 import { createRoster } from './core/routes.js';
 import { createStore } from './core/store.js';
 import { createClient } from './core/llm.js';
 import { createChatService } from './core/chat.js';
 import { createMomentsService } from './core/moments.js';
+import { createTTS, BUILTIN_ENGINES, templateOf, validateEngine, createEngine } from './core/tts/index.js';
 
 const NS = 'miniPhone';
 const BASE = new URL('.', import.meta.url);
@@ -28,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -61,6 +62,18 @@ const DEFAULTS = {
   // 独立模型
   model: { url: '', key: '', model: '', temperature: 0.8, maxTokens: 400 },
 
+  // 语音
+  voice: {
+    enabled: false,
+    activeEngine: 'openai',
+    engines: {},              // 用户改过的引擎配置（没改过的用内置默认）
+    voices: {},               // 角色名 → { engine, voice, language }
+    language: '',
+    cacheLimitMB: 200,
+    prefetch: true,           // 播这句时把下一句做好
+    autoPrepare: false,       // 回复完把整段先做好（烧钱，默认关）
+  },
+
   // 联系人 = 酒馆角色卡 + 手动添加
   contacts: [],
 
@@ -75,6 +88,7 @@ let store = null;
 let roster = null;
 let chatSvc = null;
 let momentsSvc = null;
+let tts = null;
 let client = null;
 let panel = null;
 let iframe = null;
@@ -309,8 +323,122 @@ const hashOf = (s) => {
   return (h >>> 0).toString(36);
 };
 
-/* ------------------------------------------------------- 4. 事件 */
+/* ------------------------------------------- 3.5 正文渲染（三阶段） */
 
+/**
+ * 正文里长出"可点按钮"的过程分三阶段，原因见 core/protocol.js 的注释。
+ * 这里只负责：判断该不该处理、把 token 管好、接住点击。
+ */
+
+/** 每次渲染的令牌：消息 id + 递增序号，防止旧 DOM 点出错误的行 */
+let renderTick = 0;
+/** 消息 id → 这次渲染用的 token。阶段一写入，阶段二读出。 */
+const renderTokens = new Map();
+
+const tokenOf = (meta) => `m${meta?.messageId ?? '?'}-${meta?.swipeId ?? 0}-${++renderTick}`;
+
+/** 这条消息该不该加按钮 */
+function shouldDecorate(meta) {
+  if (!active || !settings?.voice?.enabled) return false;
+  if (!meta) return false;
+  if (meta.isUser || meta.isSystem || meta.isReasoning) return false;
+  if (Number(meta.messageId) < 0) return false;
+  return true;
+}
+
+function bindRender() {
+  const ctx = context();
+  const fm = ctx?.messageFormatter;
+  if (!fm?.addHook) {
+    console.info('[mini-phone] 这版酒馆没有 messageFormatter，正文不显示声波按钮');
+    return;
+  }
+
+  const st = fm.stage ?? {};
+  const proto = () => settings.protocol ?? DEFAULT_PROTOCOL;
+
+  if (st.AFTER_MARKDOWN) {
+    // ── 标准三阶段 ──
+    fm.addHook((text, meta) => {
+      if (!shouldDecorate(meta)) return text;
+      try {
+        const token = tokenOf(meta);
+        renderTokens.set(meta.messageId, token);
+        return markLines(text, proto(), { token });
+      } catch { return text; }
+    }, { stage: st.BEFORE_REGEX });
+
+    fm.addHook((text, meta) => {
+      if (!active || !settings?.voice?.enabled) return unmark(text);
+      if (!meta || meta.isUser || meta.isSystem || meta.isReasoning) return text;
+      try {
+        return buttonsFromMarks(text, { token: renderTokens.get(meta.messageId) ?? '' });
+      } catch { return unmark(text); }
+    }, { stage: st.AFTER_MARKDOWN });
+
+    fm.addHook((text) => {
+      if (!active) return text;
+      try { return stripWaves(text); } catch { return text; }
+    }, { stage: st.AFTER_REGEX });
+
+    console.info('[mini-phone] 正文渲染：三阶段');
+  } else {
+    // ── 老酒馆：单阶段一次成型 ──
+    fm.addHook((text, meta) => {
+      if (!shouldDecorate(meta)) return text;
+      try { return renderLines(text, proto(), { token: tokenOf(meta) }); }
+      catch { return text; }
+    });
+    console.info('[mini-phone] 正文渲染：单阶段（老版本酒馆）');
+  }
+
+  // 点击：事件委托，一个监听管所有按钮
+  document.addEventListener('click', onClickWave, true);
+}
+
+/** 点击正文里的声波 */
+async function onClickWave(event) {
+  const btn = event.target?.closest?.('.mp-play');
+  if (!btn) return;
+  if (event.detail > 1) return;          // 双击放过
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const holder = btn.closest('.mp-line');
+  if (!holder) return;
+
+  const line = {
+    role: holder.dataset.role ?? '',
+    emotion: holder.dataset.emotion ?? '',
+    text: holder.dataset.text ?? '',
+    translation: holder.querySelector('.mp-tr')?.textContent?.replace(/^[“"]|[”"]$/g, '') ?? '',
+  };
+
+  const ready = tts?.readyFor(line);
+  if (!ready?.ok) {
+    notify(ready?.why ?? '语音还没配好：设置 → 语音');
+    openPanel();
+    return;
+  }
+
+  const setState = (state) => {
+    btn.dataset.state = state;
+    btn.disabled = state === 'loading';
+  };
+
+  try {
+    setState('loading');
+    await tts.speak(line, {
+      onState: (s) => setState(s === 'done' ? 'done' : s),
+    });
+  } catch (e) {
+    setState('error');
+    notify(`没念出来：${e?.message ?? e}`);
+  }
+}
+
+/* ------------------------------------------------------- 4. 事件 */
 function bindEvents() {
   const ctx = context();
   const es = ctx?.eventSource;
@@ -418,6 +546,7 @@ function spaceInfo() {
     user: ctx?.name1 || '我',
     contacts: (roster?.list ?? []).map(c => ({ name: c.name, avatar: avatarUrl(c) })),
     hasModel: !!client?.config?.url,
+    hasVoice: !!settings.voice?.enabled,
     settings: publicSettings(),
   };
 }
@@ -437,7 +566,22 @@ function publicSettings() {
     proactive: settings.chat.proactive,
     moments: settings.moments,
     model: { url: settings.model.url, model: settings.model.model, hasKey: !!settings.model.key },
+    voice: publicVoice(),
     theme: settings.ui.theme,
+  };
+}
+
+/** 语音设置里能公开给 iframe 的部分（不含 key） */
+function publicVoice() {
+  const v = settings.voice ?? {};
+  return {
+    enabled: !!v.enabled,
+    activeEngine: v.activeEngine ?? 'openai',
+    language: v.language ?? '',
+    cacheLimitMB: v.cacheLimitMB ?? 200,
+    prefetch: v.prefetch !== false,
+    autoPrepare: !!v.autoPrepare,
+    voices: v.voices ?? {},
   };
 }
 
@@ -546,6 +690,124 @@ function createBridge() {
     commentMoment: (source, id, text) => { guard(source); return momentsSvc.addComment(id, text); },
     removeMoment: (source, id) => { guard(source); return momentsSvc.remove(id); },
 
+    /* --- 语音 --- */
+    voiceGet: (source) => {
+      guard(source);
+      return {
+        ...publicVoice(),
+        engines: Object.values(tts.engines()),
+        builtins: BUILTIN_ENGINES.map(b => ({ id: b.id, name: b.name, note: b.note ?? '' })),
+        contacts: roster?.names() ?? [],
+      };
+    },
+
+    voiceSave: (source, patch) => {
+      guard(source);
+      Object.assign(settings.voice, patch ?? {});
+      saveSettings();
+      return publicVoice();
+    },
+
+    /** 存某个引擎的配置（用户改过的字段会覆盖内置默认） */
+    voiceEngineSave: (source, id, cfg) => {
+      guard(source);
+      if (!id) throw new Error('缺引擎 id');
+      settings.voice.engines = {
+        ...(settings.voice.engines ?? {}),
+        [id]: createEngine({ ...(settings.voice.engines?.[id] ?? {}), ...cfg, id }),
+      };
+      saveSettings();
+      return tts.engines()[id];
+    },
+
+    /** 拿一份内置模板，用来"恢复默认"或者"复制一份改" */
+    voiceTemplate: (source, id) => {
+      guard(source);
+      const t = templateOf(id);
+      if (!t) throw new Error(`没有这个模板：${id}`);
+      return t;
+    },
+
+    /** 新建一个自定义引擎（从空白开始） */
+    voiceEngineCreate: (source, name) => {
+      guard(source);
+      const id = `custom_${Date.now().toString(36)}`;
+      settings.voice.engines = {
+        ...(settings.voice.engines ?? {}),
+        [id]: createEngine({
+          id, name: name || '自定义引擎',
+          endpoint: '{{base}}/v1/audio/speech',
+          headers: { Authorization: 'Bearer {{key}}', 'Content-Type': 'application/json' },
+          body: { model: '{{model}}', input: '{{text}}', voice: '{{voice}}' },
+          response: 'audio',
+        }),
+      };
+      saveSettings();
+      return tts.engines()[id];
+    },
+
+    voiceEngineDelete: (source, id) => {
+      guard(source);
+      if (BUILTIN_ENGINES.some(b => b.id === id)) {
+        // 内置的不能删，但可以"恢复默认"
+        delete settings.voice.engines?.[id];
+        saveSettings();
+        return tts.engines()[id];
+      }
+      const next = { ...(settings.voice.engines ?? {}) };
+      delete next[id];
+      settings.voice.engines = next;
+      if (settings.voice.activeEngine === id) settings.voice.activeEngine = 'openai';
+      saveSettings();
+      return true;
+    },
+
+    voiceTest: (source, id) => { guard(source); return tts.test(id); },
+
+    /** 给角色配声 */
+    voiceBind: (source, role, binding) => {
+      guard(source);
+      const name = String(role ?? '').trim();
+      if (!name) throw new Error('缺角色名');
+      settings.voice.voices = { ...(settings.voice.voices ?? {}) };
+      if (binding) settings.voice.voices[name] = { ...binding };
+      else delete settings.voice.voices[name];
+      saveSettings();
+      return settings.voice.voices;
+    },
+
+    /** 念一句（聊天里的消息也走这个） */
+    voiceSpeak: async (source, line) => {
+      guard(source);
+      if (!tts) throw new Error('语音没有启用');
+      const ready = tts.readyFor(line);
+      if (!ready.ok) throw new Error(ready.why);
+      return tts.speak(line);
+    },
+
+    voiceSpeakAll: async (source, lines) => {
+      guard(source);
+      if (!tts) throw new Error('语音没有启用');
+      return tts.speakAll(lines ?? []);
+    },
+
+    voicePrefetch: async (source, lines) => {
+      guard(source);
+      if (!tts) return [];
+      return tts.prefetch(lines ?? []);
+    },
+
+    voiceStop: (source) => { guard(source); tts?.stop(); return true; },
+    voiceLevel: (source) => { guard(source); return tts?.level() ?? 0; },
+    voiceStats: (source) => { guard(source); return tts.stats(); },
+    voiceClearCache: (source) => { guard(source); return tts.clearCache(); },
+
+    /** 这个角色配好音色没有 */
+    voiceReady: (source, line) => {
+      guard(source);
+      return tts?.readyFor(line) ?? { ok: false, why: '语音没有启用' };
+    },
+
     /* --- 诊断 --- */
     diagnose: (source, messageId) => {
       guard(source);
@@ -652,8 +914,15 @@ export async function enable() {
   chatSvc = createChatService(serviceDeps);
   momentsSvc = createMomentsService(serviceDeps);
 
+  // 语音：独立于模型客户端，自己一套引擎配置
+  tts = createTTS({
+    getSettings: () => settings.voice,
+    emit: (type, payload) => bridge?.post(`voice:${type}`, payload),
+  });
+
   mountEntry();
   bindEvents();
+  bindRender();
   inject();
 
   active = true;
@@ -666,6 +935,12 @@ export async function disable() {
 
   for (const [es, evt, fn] of listeners) { try { es.removeListener(evt, fn); } catch {} }
   listeners.length = 0;
+
+  document.removeEventListener('click', onClickWave, true);
+  tts?.stop();
+  tts = null;
+  renderTokens.clear();
+  clearStage();
 
   clearInject();
   unmountEntry();
