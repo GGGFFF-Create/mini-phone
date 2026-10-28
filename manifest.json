@@ -1,7 +1,7 @@
 {
   "display_name": "小手机",
   "name": "mini-phone",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "author": "GGGFFF-Create",
   "description": "给酒馆装一部小手机：角色在正文里发消息，手机上真的收到；手机上能听语音、看朋友圈。",
   "js": "index.js",
@@ -10,9 +10,11 @@
   "minimum_client_version": "1.13.0",
   "auto_update": false,
   "hooks": {
+    "activate": "enable",
     "enable": "enable",
     "disable": "disable",
-    "delete": "dispose"
+    "delete": "dispose",
+    "clean": "dispose"
   },
   "generate_interceptor": "miniPhoneInterceptor"
 }

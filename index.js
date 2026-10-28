@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -351,12 +351,52 @@ function shouldDecorate(meta) {
 
 function bindRender() {
   const ctx = context();
+
+  /* ── 路线一：新版酒馆的 messageFormatter（三阶段钩子）── */
   const fm = ctx?.messageFormatter;
-  if (!fm?.addHook) {
-    console.info('[mini-phone] 这版酒馆没有 messageFormatter，正文不显示声波按钮');
+  if (fm?.addHook) {
+    bindRenderStages(fm);
+    console.info('[mini-phone] 正文渲染：messageFormatter 三阶段');
+    document.addEventListener('click', onClickWave, true);
     return;
   }
 
+  /* ── 路线二：老版酒馆的 messageFormatting（包装这个函数）── */
+  const original = ctx?.messageFormatting;
+  if (typeof original === 'function') {
+    legacyFormatting = original;
+    ctx.messageFormatting = function (text, name, isSystem, isUser, messageId, ...rest) {
+      // 出任何问题都退回原样，绝不让正文变空
+      if (!active || !settings?.voice?.enabled) return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
+      if (isSystem || isUser || !(Number(messageId) >= 0)) {
+        return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
+      }
+      try {
+        const token = tokenOf({ messageId });
+        renderTokens.set(messageId, token);
+        // 先打隐形标记再交给酒馆渲染 —— 私用区字符不会被 markdown 转义
+        const marked = markLines(text, settings.protocol ?? DEFAULT_PROTOCOL, { token });
+        const html = original.call(this, marked, name, isSystem, isUser, messageId, ...rest);
+        return buttonsFromMarks(html, { token });
+      } catch (e) {
+        console.warn('[mini-phone] 渲染降级：', e?.message);
+        return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
+      }
+    };
+    console.info('[mini-phone] 正文渲染：messageFormatting 包装（老版本酒馆）');
+    document.addEventListener('click', onClickWave, true);
+    return;
+  }
+
+  /* ── 都没有：只能不用正文按钮 ── */
+  console.info('[mini-phone] 这版酒馆既没有 messageFormatter 也没有 messageFormatting，正文不显示声波按钮。声音仍可在手机里念。');
+  document.addEventListener('click', onClickWave, true);
+}
+
+/** 老版酒馆被包装前的原函数，disable 时要还原 */
+let legacyFormatting = null;
+
+function bindRenderStages(fm) {
   const st = fm.stage ?? {};
   const proto = () => settings.protocol ?? DEFAULT_PROTOCOL;
 
@@ -384,19 +424,16 @@ function bindRender() {
       try { return stripWaves(text); } catch { return text; }
     }, { stage: st.AFTER_REGEX });
 
-    console.info('[mini-phone] 正文渲染：三阶段');
-  } else {
-    // ── 老酒馆：单阶段一次成型 ──
-    fm.addHook((text, meta) => {
-      if (!shouldDecorate(meta)) return text;
-      try { return renderLines(text, proto(), { token: tokenOf(meta) }); }
-      catch { return text; }
-    });
-    console.info('[mini-phone] 正文渲染：单阶段（老版本酒馆）');
+    return;
   }
 
-  // 点击：事件委托，一个监听管所有按钮
-  document.addEventListener('click', onClickWave, true);
+  // 有 addHook 但没有 stage：单阶段一次成型
+  fm.addHook((text, meta) => {
+    if (!shouldDecorate(meta)) return text;
+    try { return renderLines(text, proto(), { token: tokenOf(meta) }); }
+    catch { return text; }
+  });
+  console.info('[mini-phone] 正文渲染：messageFormatter 单阶段');
 }
 
 /** 点击正文里的声波 */
@@ -496,7 +533,9 @@ function mountEntry() {
     item.id = 'miniPhone-item';
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.tabIndex = 0;
-    item.innerHTML = '<i class="fa-solid fa-mobile-screen-button"></i><span>小手机</span>';
+    // 文案加前缀：酒馆会给每个扩展自动生成一个同名开关项，
+    // 不区分的话菜单里会出现两个「小手机」
+    item.innerHTML = '<i class="fa-solid fa-mobile-screen-button"></i><span>打开小手机</span>';
     item.addEventListener('click', openPanel);
     menu.append(item);
   }
@@ -983,7 +1022,7 @@ export async function enable() {
     return;
   }
   if (!ctx.setExtensionPrompt || !ctx.eventSource) {
-    notice?.('酒馆版本太旧，缺 setExtensionPrompt / eventSource');
+    notify('酒馆版本太旧，缺 setExtensionPrompt / eventSource');
     return;
   }
 
@@ -1048,6 +1087,13 @@ export async function disable() {
   listeners.length = 0;
 
   document.removeEventListener('click', onClickWave, true);
+
+  // 老版酒馆：把被包装的渲染函数还回去
+  if (legacyFormatting) {
+    try { const c = context(); if (c) c.messageFormatting = legacyFormatting; } catch { /* 忽略 */ }
+    legacyFormatting = null;
+  }
+
   tts?.stop();
   tts = null;
   renderTokens.clear();
