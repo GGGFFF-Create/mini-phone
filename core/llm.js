@@ -13,23 +13,136 @@
 /* ============================================================ 客户端 */
 
 /**
+ * 模型配置的默认形状。设置页照它生成表单，所有字段用户都能改。
+ * 内置的只是"填好的默认值"，不是白名单。
+ */
+export function createProfile(overrides = {}) {
+  return {
+    id: overrides.id ?? '',
+    name: overrides.name ?? '未命名',
+
+    // 基础
+    base: '',                  // 接口根地址，比如 https://api.openai.com/v1
+    key: '',
+    model: '',
+    temperature: 0.8,
+    maxTokens: 400,
+
+    // 高级（默认值能用，需要时再改）
+    endpoint: '{{base}}/chat/completions',   // 可以用 {{base}} {{key}} {{model}}
+    headers: {},               // 额外请求头，值里可用 {{key}} {{base}}
+    body: {},                  // 额外请求体字段（top_p、presence_penalty…）
+    stream: false,             // 是否要流式（有些中转不支持）
+
+    note: '',
+    ...overrides,
+  };
+}
+
+/** 内置模板 —— 也是可改的配置，不是硬编码 */
+export const BUILTIN_PROFILES = Object.freeze([
+  {
+    id: 'openai',
+    name: 'OpenAI 兼容',
+    base: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    temperature: 0.8,
+    maxTokens: 400,
+    note: '大部分中转站都吃这个格式。手机聊天建议用便宜快的模型',
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    base: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+    temperature: 0.8,
+    maxTokens: 400,
+    note: '中文便宜，适合手机日常聊天',
+  },
+  {
+    id: 'gemini',
+    name: 'Gemini（OpenAI 兼容层）',
+    base: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-2.0-flash',
+    temperature: 0.8,
+    maxTokens: 400,
+    note: '走 Google 的 OpenAI 兼容接口',
+  },
+  {
+    id: 'local',
+    name: '本地（Ollama / LM Studio）',
+    base: 'http://127.0.0.1:11434/v1',
+    model: 'qwen2.5:7b',
+    temperature: 0.8,
+    maxTokens: 400,
+    note: '不花钱，但要求本机跑着模型服务',
+  },
+]);
+
+/** 模板 → 可编辑的副本 */
+export const profileTemplate = (id) => {
+  const hit = BUILTIN_PROFILES.find(p => p.id === id);
+  return hit ? createProfile(structuredClone(hit)) : null;
+};
+
+const fillStr = (template, vars) =>
+  String(template ?? '').replace(/\{\{\s*(\w+)\s*\}\}/g, (m, k) => (k in vars ? String(vars[k] ?? '') : m));
+
+const fillObj = (value, vars) => {
+  if (typeof value === 'string') return fillStr(value, vars);
+  if (Array.isArray(value)) return value.map(v => fillObj(v, vars));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillObj(v, vars)]));
+  }
+  return value;
+};
+
+/** 校验一份配置，返回人话的问题列表 */
+export function validateProfile(p) {
+  const problems = [];
+  if (!p) { problems.push('还没有选配置'); return problems; }
+  if (!p.base && !/\{\{base\}\}/.test(p.endpoint ?? '') && !p.endpoint) problems.push('接口地址是空的');
+  if (!p.model) problems.push('没有填模型名');
+  if (!String(p.endpoint ?? '').includes('{{base}}') && !/^https?:/i.test(p.endpoint ?? '')) {
+    if (p.endpoint && !p.base) problems.push('endpoint 用了绝对地址但 base 是空的（不影响使用，确认一下）');
+  }
+  return problems;
+}
+
+/**
  * 把各种中转/官方的差异收在一处。
- * 支持：OpenAI 兼容（chat/completions）、流式 SSE、429 退避。
+ *
+ * 支持：
+ *   - OpenAI 兼容（chat/completions）
+ *   - 自定义 endpoint / 额外请求头 / 额外请求体
+ *   - 流式 SSE
+ *   - 429 / 5xx 退避重试
  */
 export function createClient(config = {}) {
+  const profile = createProfile({
+    base: config.url ?? config.base ?? '',
+    key: config.key ?? '',
+    model: config.model ?? '',
+    temperature: config.temperature ?? 0.75,
+    maxTokens: config.maxTokens ?? 400,
+    endpoint: config.endpoint ?? '{{base}}/chat/completions',
+    headers: config.headers ?? {},
+    body: config.body ?? {},
+    stream: config.stream ?? false,
+    ...config,
+  });
+
   const {
-    url = '',
-    key = '',
-    model = '',
-    temperature = 0.75,
-    maxTokens = 400,
+    key, model, temperature, maxTokens,
     timeout = 60_000,
     retries = 1,
-  } = config;
+  } = profile;
 
-  const endpoint = normalizeEndpoint(url);
+  const base = String(profile.base ?? '').replace(/\/+$/, '');
+  const vars = { base, key, model };
+  const endpoint = fillStr(profile.endpoint, vars).replace(/([^:]\/)\/+/g, '$1');
 
-  async function once(messages, { stream = false, signal, onDelta, extra = {} } = {}) {
+  async function once(messages, { stream = profile.stream, signal, onDelta, extra = {} } = {}) {
     if (!endpoint) throw new Error('还没有配置接口地址');
     if (!model) throw new Error('还没有配置模型名');
 
@@ -39,7 +152,14 @@ export function createClient(config = {}) {
       temperature,
       max_tokens: maxTokens,
       ...(stream ? { stream: true } : {}),
+      ...fillObj(profile.body ?? {}, vars),      // 用户额外加的字段
       ...extra,
+    };
+
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      ...fillObj(profile.headers ?? {}, vars),
     };
 
     const ctrl = new AbortController();
@@ -50,10 +170,7 @@ export function createClient(config = {}) {
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(key ? { Authorization: `Bearer ${key}` } : {}),
-        },
+        headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
@@ -81,7 +198,9 @@ export function createClient(config = {}) {
   }
 
   return {
-    config,
+    profile,
+    /** 兼容老代码：client.config.url 表示"配好了没有" */
+    config: { url: base, model, profile },
 
     /**
      * 一次对话。失败会退避重试一次（只对 429 / 5xx）。
@@ -107,15 +226,21 @@ export function createClient(config = {}) {
       const { text } = await this.chat([{ role: 'user', content: '回一个字：好' }], {});
       return text.trim();
     },
-  };
-}
 
-function normalizeEndpoint(url) {
-  const u = String(url ?? '').trim().replace(/\/+$/, '');
-  if (!u) return '';
-  if (/\/chat\/completions$/.test(u)) return u;
-  if (/\/v\d+$/.test(u)) return u + '/chat/completions';
-  return u + '/v1/chat/completions';
+    /** 给设置页看的：这份配置解析成什么样 */
+    describe() {
+      return {
+        endpoint,
+        model,
+        temperature,
+        maxTokens,
+        stream: !!profile.stream,
+        hasKey: !!key,
+        extraBodyKeys: Object.keys(profile.body ?? {}),
+        extraHeaderKeys: Object.keys(profile.headers ?? {}),
+      };
+    },
+  };
 }
 
 async function readStream(res, onDelta) {

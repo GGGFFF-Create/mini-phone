@@ -623,6 +623,29 @@ html, body {
   background: color-mix(in srgb, var(--surface) 60%, transparent);
 }
 
+/* 折叠的高级设置 */
+.advanced {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin: 8px 0;
+}
+.advanced > summary {
+  padding: 11px 16px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform .15s ease;
+}
+.advanced[open] > summary::before { content: '▾ '; }
+.advanced[open] > summary { color: var(--accent); }
+
 .voice-bind-list { display: flex; flex-direction: column; }
 
 select.field-input {

@@ -14,7 +14,7 @@ import { parseLines, renderLines, plainLines, diagnose, speechRule, KEEP_REPLY, 
 import { extractPhone, hasPhone, phoneRule } from './core/phone.js';
 import { createRoster } from './core/routes.js';
 import { createStore } from './core/store.js';
-import { createClient } from './core/llm.js';
+import { createClient, createProfile, BUILTIN_PROFILES, profileTemplate, validateProfile } from './core/llm.js';
 import { createChatService } from './core/chat.js';
 import { createMomentsService } from './core/moments.js';
 import { createTTS, BUILTIN_ENGINES, templateOf, validateEngine, createEngine } from './core/tts/index.js';
@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -59,8 +59,11 @@ const DEFAULTS = {
     reactToMe: true,        // 角色会不会对我的动态点赞评论
   },
 
-  // 独立模型
-  model: { url: '', key: '', model: '', temperature: 0.8, maxTokens: 400 },
+  // 独立模型（聊天用）—— 多套配置，可切换
+  llm: {
+    activeId: 'openai',
+    profiles: {},             // 用户改过的配置（没改过的用内置默认）
+  },
 
   // 语音
   voice: {
@@ -565,7 +568,7 @@ function publicSettings() {
     budget: settings.chat.budget,
     proactive: settings.chat.proactive,
     moments: settings.moments,
-    model: { url: settings.model.url, model: settings.model.model, hasKey: !!settings.model.key },
+    model: publicLlm(),
     voice: publicVoice(),
     theme: settings.ui.theme,
   };
@@ -582,6 +585,33 @@ function publicVoice() {
     prefetch: v.prefetch !== false,
     autoPrepare: !!v.autoPrepare,
     voices: v.voices ?? {},
+  };
+}
+
+/** 当前生效的模型配置表：用户改过的覆盖内置默认 */
+function llmProfiles() {
+  const saved = settings.llm?.profiles ?? {};
+  const table = {};
+  for (const b of BUILTIN_PROFILES) {
+    table[b.id] = createProfile({ ...b, ...(saved[b.id] ?? {}) });
+  }
+  for (const [id, cfg] of Object.entries(saved)) {
+    if (!table[id]) table[id] = createProfile({ ...cfg, id });
+  }
+  return table;
+}
+
+/** 给 iframe 看的模型状态（不含 key） */
+function publicLlm() {
+  const l = settings.llm ?? {};
+  const active = llmProfiles()[l.activeId] ?? null;
+  return {
+    activeId: l.activeId ?? '',
+    name: active?.name ?? '',
+    base: active?.base ?? '',
+    model: active?.model ?? '',
+    hasKey: !!active?.key,
+    ready: !!(active?.base && active?.model),
   };
 }
 
@@ -608,20 +638,7 @@ function createBridge() {
 
     /* --- 设置 --- */
     getSettings: (source) => { guard(source); return publicSettings(); },
-    saveModel: (source, patch) => {
-      guard(source);
-      Object.assign(settings.model, patch ?? {});
-      saveSettings();
-      rebuildClient();
-      return { ok: true, hasModel: !!client?.config?.url };
-    },
-    testModel: async (source) => {
-      guard(source);
-      rebuildClient();
-      if (!client?.config?.url) throw new Error('还没填接口地址');
-      const reply = await client.ping();
-      return { ok: true, reply };
-    },
+
     saveChat: (source, patch) => {
       guard(source);
       Object.assign(settings.chat, patch ?? {});
@@ -689,6 +706,105 @@ function createBridge() {
     likeMoment: (source, id) => { guard(source); return momentsSvc.toggleLike(id); },
     commentMoment: (source, id, text) => { guard(source); return momentsSvc.addComment(id, text); },
     removeMoment: (source, id) => { guard(source); return momentsSvc.remove(id); },
+
+    /* --- 模型配置（聊天用）--- */
+    llmGet: (source) => {
+      guard(source);
+      return {
+        ...publicLlm(),
+        profiles: Object.values(llmProfiles()),
+        builtins: BUILTIN_PROFILES.map(b => ({ id: b.id, name: b.name, note: b.note ?? '' })),
+      };
+    },
+
+    llmSetActive: (source, id) => {
+      guard(source);
+      if (!llmProfiles()[id]) throw new Error('没有这个配置');
+      settings.llm = { ...(settings.llm ?? {}), activeId: id };
+      saveSettings();
+      rebuildClient();
+      return publicLlm();
+    },
+
+    llmSaveProfile: (source, id, cfg) => {
+      guard(source);
+      if (!id) throw new Error('缺配置 id');
+      const current = llmProfiles()[id] ?? createProfile({ id });
+      const next = createProfile({ ...current, ...cfg, id });
+      settings.llm = {
+        ...(settings.llm ?? {}),
+        profiles: { ...(settings.llm?.profiles ?? {}), [id]: next },
+      };
+      saveSettings();
+      rebuildClient();
+      return llmProfiles()[id];
+    },
+
+    llmTemplate: (source, id) => {
+      guard(source);
+      const t = profileTemplate(id);
+      if (!t) throw new Error(`没有这个模板：${id}`);
+      return t;
+    },
+
+    llmCreate: (source, name) => {
+      guard(source);
+      const id = `custom_${Date.now().toString(36)}`;
+      settings.llm = {
+        ...(settings.llm ?? {}),
+        profiles: {
+          ...(settings.llm?.profiles ?? {}),
+          [id]: createProfile({ id, name: name || '自定义配置', base: '', model: '' }),
+        },
+      };
+      saveSettings();
+      return llmProfiles()[id];
+    },
+
+    llmDelete: (source, id) => {
+      guard(source);
+      if (BUILTIN_PROFILES.some(b => b.id === id)) {
+        // 内置的不能删，只能恢复默认
+        const next = { ...(settings.llm?.profiles ?? {}) };
+        delete next[id];
+        settings.llm = { ...(settings.llm ?? {}), profiles: next };
+      } else {
+        const next = { ...(settings.llm?.profiles ?? {}) };
+        delete next[id];
+        settings.llm = { ...(settings.llm ?? {}), profiles: next };
+        if (settings.llm.activeId === id) settings.llm.activeId = 'openai';
+      }
+      saveSettings();
+      rebuildClient();
+      return llmProfiles()[id] ?? true;
+    },
+
+    /** 测试某个配置通不通（用极短的一句话，成本可忽略） */
+    llmTest: async (source, id) => {
+      guard(source);
+      const profile = llmProfiles()[id ?? settings.llm?.activeId];
+      if (!profile) return { ok: false, error: '没有这个配置' };
+
+      const problems = validateProfile(profile);
+      if (problems.length) return { ok: false, error: problems.join('；') };
+
+      const started = Date.now();
+      try {
+        const c = createClient(profile);
+        const reply = await c.ping();
+        return { ok: true, ms: Date.now() - started, reply: String(reply).slice(0, 40), describe: c.describe() };
+      } catch (e) {
+        return { ok: false, ms: Date.now() - started, error: e?.message ?? String(e) };
+      }
+    },
+
+    /** 这份配置最后会打成什么样的请求（调试用） */
+    llmDescribe: (source, id) => {
+      guard(source);
+      const profile = llmProfiles()[id ?? settings.llm?.activeId];
+      if (!profile) throw new Error('没有这个配置');
+      return createClient(profile).describe();
+    },
 
     /* --- 语音 --- */
     voiceGet: (source) => {
@@ -845,13 +961,8 @@ function createBridge() {
 /* --------------------------------------------------- 7. 模型客户端 */
 
 function rebuildClient() {
-  client = createClient({
-    url: settings.model.url,
-    key: settings.model.key,
-    model: settings.model.model,
-    temperature: settings.model.temperature,
-    maxTokens: settings.model.maxTokens,
-  });
+  const active = llmProfiles()[settings.llm?.activeId] ?? null;
+  client = active ? createClient(active) : createClient({});
 }
 
 /* ------------------------------------------------------------ 工具 */

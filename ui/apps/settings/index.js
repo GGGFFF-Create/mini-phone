@@ -17,7 +17,7 @@ export async function mount(root, ctx) {
 
   let settings = null;
   try { settings = await api.getSettings(); } catch { /* 下面会给默认 */ }
-  settings ??= { mode: 'story', budget: {}, proactive: {}, moments: {}, model: {}, theme: 'dark' };
+  settings ??= { mode: 'story', budget: {}, proactive: {}, moments: {}, theme: 'dark' };
 
   const view = el('div', 'view settings-view');
   root.append(view);
@@ -100,60 +100,192 @@ export async function mount(root, ctx) {
 
   section('模型接口');
   view.append(el('p', 'settings-note',
-    '这是手机聊天和朋友圈用的独立通道，和酒馆的正文模型分开算额度。'));
+    '这是手机聊天和朋友圈用的独立通道，和酒馆的正文模型分开算额度。可以存多套配置随时切。'));
 
-  const url = field({
-    label: '接口地址',
-    value: settings.model.url,
-    placeholder: 'https://api.example.com/v1',
-    hint: '填到 /v1 就行，会自动补 /chat/completions',
-  });
-  const key = field({
-    label: 'API Key',
-    value: '',
-    type: 'password',
-    placeholder: settings.model.hasKey ? '已保存（留空则不修改）' : 'sk-...',
-  });
-  const model = field({
-    label: '模型名',
-    value: settings.model.model,
-    placeholder: 'gpt-4o-mini',
-    hint: '手机聊天建议用便宜快的模型',
-  });
+  let llmData = null;
+  try { llmData = await api.llmGet(); } catch { /* 忽略 */ }
 
-  const testRow = el('div', 'field field-row');
-  const testBtn = el('button', 'pill-btn', '测试连接');
-  testBtn.type = 'button';
-  const testOut = el('span', 'field-hint', '');
-  testRow.append(testBtn, testOut);
+  if (!llmData) {
+    view.append(el('p', 'settings-note', '模型模块没加载起来，看看控制台。'));
+  } else {
+    /* 配置选择 */
+    const profileSelect = el('select', 'field-input');
+    for (const p of llmData.profiles) {
+      const o = el('option', '', p.name || p.id);
+      o.value = p.id;
+      if (p.id === llmData.activeId) o.selected = true;
+      profileSelect.append(o);
+    }
+    profileSelect.addEventListener('change', async () => {
+      try { llmData = { ...llmData, ...(await api.llmSetActive(profileSelect.value)) }; renderLlmEditor(); }
+      catch (e) { toast(e?.message ?? '失败'); }
+    });
 
-  const saveModel = el('button', 'primary-btn', '保存接口配置');
-  saveModel.type = 'button';
+    const llmRow = el('div', 'field');
+    llmRow.append(el('span', 'field-label', '当前配置'));
+    llmRow.append(profileSelect);
 
-  saveModel.addEventListener('click', async () => {
-    saveModel.disabled = true;
-    try {
-      const patch = { url: url.input.value.trim(), model: model.input.value.trim() };
-      if (key.input.value.trim()) patch.key = key.input.value.trim();
-      await api.saveModel(patch);
-      key.input.value = '';
-      toast('已保存');
-    } catch (e) { toast(e?.message ?? '保存失败'); }
-    finally { saveModel.disabled = false; }
-  });
+    const newBtn = el('button', 'pill-btn', '＋ 新建配置');
+    newBtn.type = 'button';
+    newBtn.addEventListener('click', async () => {
+      try {
+        const p = await api.llmCreate('我的模型');
+        llmData = await api.llmGet();
+        await api.llmSetActive(p.id);
+        llmData = await api.llmGet();
+        renderLlmEditor();
+        toast('建好了，往下填');
+      } catch (e) { toast(e?.message ?? '失败'); }
+    });
 
-  testBtn.addEventListener('click', async () => {
-    testBtn.disabled = true;
-    testOut.textContent = '测试中…';
-    try {
-      const r = await api.testModel();
-      testOut.textContent = `通了：${String(r.reply).slice(0, 30)}`;
-    } catch (e) {
-      testOut.textContent = `不通：${String(e?.message ?? e).slice(0, 60)}`;
-    } finally { testBtn.disabled = false; }
-  });
+    const statusHint = el('span', 'field-hint', '');
+    llmRow.append(newBtn, statusHint);
+    view.append(llmRow);
 
-  view.append(url.wrap, key.wrap, model.wrap, saveModel, testRow, testOut);
+    const llmEditor = el('div', 'engine-editor');
+    view.append(llmEditor);
+
+    function renderLlmEditor() {
+      llmEditor.innerHTML = '';
+      const p = llmData.profiles.find(x => x.id === llmData.activeId);
+      if (!p) { llmEditor.append(el('p', 'settings-note', '没有这个配置')); return; }
+      if (p.note) llmEditor.append(el('p', 'settings-note', p.note));
+
+      const mk = (label, key, opts = {}) => {
+        const f = field({
+          label,
+          value: key === 'key' ? '' : (p[key] ?? ''),
+          type: opts.type ?? 'text',
+          placeholder: opts.placeholder ?? '',
+          hint: opts.hint ?? '',
+        });
+        if (key === 'key') f.input.placeholder = p.key ? '已保存（留空则不修改）' : 'sk-...';
+        f.input.addEventListener('change', () => {
+          const v = f.input.value.trim();
+          if (key === 'key' && !v) return;         // 留空表示不改
+          saveLlm({ [key]: key === 'temperature' || key === 'maxTokens' ? Number(v) : v });
+        });
+        llmEditor.append(f.wrap);
+        return f;
+      };
+
+      mk('名称', 'name', { placeholder: '这套配置叫什么' });
+      mk('接口根地址', 'base', { placeholder: 'https://api.deepseek.com/v1', hint: '填到 /v1。下面的 endpoint 用 {{base}} 引用它' });
+      mk('API Key', 'key', { type: 'password' });
+      mk('模型名', 'model', { placeholder: 'deepseek-chat / gpt-4o-mini', hint: '手机聊天建议用便宜快的' });
+
+      const temp = slider({
+        label: '温度（越高越放飞）',
+        value: p.temperature ?? 0.8, min: 0, max: 1.5, step: 0.1,
+        fmt: (v) => Number(v).toFixed(1),
+      });
+      temp.input.addEventListener('change', () => saveLlm({ temperature: Number(temp.input.value) }));
+      llmEditor.append(temp.wrap);
+
+      const maxTok = slider({
+        label: '回复长度上限',
+        value: p.maxTokens ?? 400, min: 60, max: 1200, step: 20,
+        hint: '手机消息本来就短，不用给太多',
+      });
+      maxTok.input.addEventListener('change', () => saveLlm({ maxTokens: Number(maxTok.input.value) }));
+      llmEditor.append(maxTok.wrap);
+
+      /* 高级：默认能用，需要时再改 */
+      const adv = el('details', 'advanced');
+      adv.append(el('summary', '', '高级（地址、请求头、请求体）'));
+      adv.addEventListener('toggle', () => {
+        if (!adv.open || adv.dataset.filled) return;
+        adv.dataset.filled = '1';
+
+        const ep = el('div', 'field');
+        ep.append(el('span', 'field-label', '请求地址（endpoint）'));
+        const epInput = el('input', 'field-input');
+        epInput.type = 'text';
+        epInput.value = p.endpoint ?? '';
+        epInput.placeholder = '{{base}}/chat/completions';
+        epInput.addEventListener('change', () => saveLlm({ endpoint: epInput.value.trim() }));
+        ep.append(epInput, el('span', 'field-hint', '可以用 {{base}} {{key}} {{model}}'));
+        adv.append(ep);
+
+        adv.append(jsonEditor('额外请求头（JSON）', p.headers, (v) => saveLlm({ headers: v }), 3));
+        adv.append(jsonEditor('额外请求体（JSON）', p.body, (v) => saveLlm({ body: v }), 4));
+        adv.append(el('p', 'settings-note',
+          '额外请求体里可以放 top_p、presence_penalty、stop 这些标准字段，会被合并进请求。'));
+
+        const st = toggle({ label: '要流式输出', checked: p.stream === true, hint: '有些中转不支持，报错就关掉' });
+        st.input.addEventListener('change', () => saveLlm({ stream: st.input.checked }));
+        adv.append(st.wrap);
+      });
+      llmEditor.append(adv);
+
+      /* 测试 */
+      const testRow = el('div', 'field field-row');
+      const tBtn = el('button', 'pill-btn', '测试这套配置');
+      tBtn.type = 'button';
+      const tOut = el('span', 'field-hint', '');
+      testRow.append(tBtn, tOut);
+      tBtn.addEventListener('click', async () => {
+        tBtn.disabled = true;
+        tOut.textContent = '测试中…';
+        try {
+          const r = await api.llmTest(p.id);
+          tOut.textContent = r.ok
+            ? `通了（${r.ms}ms）：${r.reply}`
+            : `不通：${r.error}`;
+        } catch (e) {
+          tOut.textContent = `出错：${e?.message ?? e}`;
+        } finally { tBtn.disabled = false; }
+      });
+      llmEditor.append(testRow);
+
+      /* 恢复 / 删除 */
+      const actionRow = el('div', 'field field-row');
+      const reset = el('button', 'pill-btn', '恢复默认值');
+      reset.type = 'button';
+      reset.addEventListener('click', async () => {
+        try {
+          const tpl = await api.llmTemplate(p.id);
+          if (!tpl) { toast('这个配置没有内置模板'); return; }
+          await api.llmSaveProfile(p.id, tpl);
+          llmData = await api.llmGet();
+          renderLlmEditor();
+          toast('已恢复');
+        } catch (e) { toast(e?.message ?? '失败'); }
+      });
+      actionRow.append(reset);
+
+      if (p.id.startsWith('custom_')) {
+        const del = el('button', 'pill-btn', '删除这套配置');
+        del.type = 'button';
+        del.addEventListener('click', async () => {
+          try {
+            await api.llmDelete(p.id);
+            llmData = await api.llmGet();
+            renderLlmEditor();
+            toast('已删除');
+          } catch (e) { toast(e?.message ?? '失败'); }
+        });
+        actionRow.append(del);
+      }
+      llmEditor.append(actionRow);
+
+      async function saveLlm(patch) {
+        try {
+          await api.llmSaveProfile(p.id, patch);
+          llmData = await api.llmGet();
+          statusHint.textContent = '已保存';
+          setTimeout(() => { statusHint.textContent = ''; }, 1200);
+        } catch (e) { toast(e?.message ?? '保存失败'); }
+      }
+    }
+
+    renderLlmEditor();
+
+    if (!llmData.ready) {
+      view.append(el('p', 'settings-note',
+        '⚠️ 现在这套还没填完整，手机聊天会提示"还没配置模型"。'));
+    }
+  }
 
   /* ------------------------------------------------------ 模式 */
 
