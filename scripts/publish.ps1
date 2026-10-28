@@ -189,7 +189,10 @@ try {
             }
         }
 
-        git remote remove origin 2>$null
+        # 没有 origin 时这条会返回非零，容忍它
+        $ErrorActionPreference = 'SilentlyContinue'
+        try { git remote remove origin 2>$null } catch { }
+        $ErrorActionPreference = $PrevEap
         git remote add origin "https://github.com/$User/$Repo.git"
     }
 
