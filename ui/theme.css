@@ -629,6 +629,101 @@ html, body {
   border-bottom: 1px solid var(--line);
   margin: 8px 0;
 }
+
+/* ------------------------------------------------------- 聊天模式卡片 */
+
+.mode-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 16px 4px;
+}
+
+.mode-card {
+  display: block;
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.mode-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.mode-card.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.mode-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mode-card-head b { font-size: 14.5px; }
+
+.mode-badge {
+  padding: 2px 7px;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.mode-badge.accent { background: rgba(79, 140, 255, .18); color: #7aa8ff; }
+.mode-badge.mid { background: rgba(255, 170, 60, .16); color: #ffc169; }
+.mode-badge.quiet { background: rgba(140, 147, 168, .18); color: #a8b0c4; }
+
+.mode-what {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.mode-detail {
+  margin: 0 0 4px;
+  padding-left: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-dim);
+  position: relative;
+}
+.mode-detail::before {
+  content: '·';
+  position: absolute;
+  left: 4px;
+  color: var(--ink-dim);
+}
+
+.mode-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.mode-good { color: color-mix(in srgb, var(--accent) 80%, var(--ink)); }
+.mode-cost { color: var(--ink-dim); }
+
+/* 音色条目的来源标签 */
+.voice-src {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  color: var(--ink-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.voice-src.src-card { color: #7aa8ff; border-color: rgba(79, 140, 255, .3); }
+.voice-src.src-story { color: #ffc169; border-color: rgba(255, 170, 60, .3); }
+.voice-src.src-voice { color: #7ddca6; border-color: rgba(80, 200, 140, .3); }
 .advanced > summary {
   padding: 11px 16px;
   font-size: 12px;

@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -77,8 +77,10 @@ const DEFAULTS = {
     autoPrepare: false,       // 回复完把整段先做好（烧钱，默认关）
   },
 
-  // 联系人 = 酒馆角色卡 + 手动添加
+  // 联系人 = 当前卡的成员 + 手动加的 + 剧情里说过话的
   contacts: [],
+  /** 在剧情里说过话的人，按卡记录：{ name, cards: ['card:xxx'], at } */
+  seenRoles: [],
 
   ui: { theme: 'dark', lastThread: '', closedAt: 0 },
 };
@@ -143,20 +145,115 @@ function currentSpace() {
   } catch { return { key: 'global', name: '', type: 'card', members: [] }; }
 }
 
-/** 联系人 = 角色卡里的人 + 手动添加的 + 正文里出现过的 */
+/**
+ * 联系人名册。
+ *
+ * 【为什么不能直接用 ctx.characters】
+ * 那是**整个酒馆的所有角色卡**。列出来会有几十个，用户在设置里看到一堆
+ * 跟当前剧情毫无关系的名字，而且换卡之后还是这一堆。
+ *
+ * 【三路来源，按当前卡过滤】
+ *   ① 当前卡的成员：单卡 = 角色名，群聊 = 群成员。这是主体。
+ *   ② 手动加的（只在加它的那张卡里算数）
+ *   ③ 在剧情里说过话的：正文解析出的人名，自动登记到当前卡名下
+ *      （跟 ST-iPhonie 的 routes + cards 标记一个思路）
+ *
+ * 主角（user persona）不算联系人，不进名册。
+ */
 function buildRoster() {
   const ctx = context();
-  const fromCards = (ctx?.characters ?? [])
-    .filter(c => c?.name && c.avatar !== 'none')
-    .map(c => ({ name: c.name, aliases: [], description: c.description ?? '', personality: c.personality ?? '', avatar: c.avatar }));
-  const manual = (settings.contacts ?? []).map(c => ({ ...c, description: c.description ?? '', personality: c.personality ?? '' }));
+  const space = currentSpace();
+  const all = ctx?.characters ?? [];
+  const byName = new Map(all.map(c => [c?.name, c]).filter(([n]) => n));
 
-  // 手动配置优先（可能带别名）
+  const cardOf = (name) => {
+    const c = byName.get(name);
+    return {
+      description: c?.description ?? '',
+      personality: c?.personality ?? '',
+      avatar: c?.avatar && c.avatar !== 'none' ? c.avatar : '',
+    };
+  };
+
   const merged = new Map();
-  for (const c of fromCards) merged.set(c.name, c);
-  for (const c of manual) merged.set(c.name, { ...merged.get(c.name), ...c });
+
+  // ① 当前卡的成员
+  for (const name of space.members) {
+    const n = String(name ?? '').trim();
+    if (!n || n === ctx?.name1) continue;
+    merged.set(n, { name: n, aliases: [], source: 'card', ...cardOf(n) });
+  }
+
+  // ② 手动加的（带 cardKey 的只在对应卡里出现）
+  for (const c of settings.contacts ?? []) {
+    const n = String(c?.name ?? '').trim();
+    if (!n || n === ctx?.name1) continue;
+    if (c.cardKey && c.cardKey !== space.key) continue;
+    merged.set(n, { ...(merged.get(n) ?? {}), ...c, name: n, source: merged.get(n)?.source ?? 'manual' });
+  }
+
+  // ③ 剧情里说过话的
+  for (const r of settings.seenRoles ?? []) {
+    const n = String(r?.name ?? '').trim();
+    if (!n || n === ctx?.name1) continue;
+    if (!Array.isArray(r.cards) || !r.cards.includes(space.key)) continue;
+    if (!merged.has(n)) merged.set(n, { name: n, aliases: r.aliases ?? [], source: 'story', ...cardOf(n) });
+  }
+
+  // ④ 手动配过音色的人，即使在当前卡没出现过，也要留着 —— 不然用户会以为配置丢了
+  for (const n of Object.keys(settings.voice?.voices ?? {})) {
+    if (!merged.has(n) && n !== ctx?.name1) {
+      merged.set(n, { name: n, aliases: [], source: 'voice', ...cardOf(n) });
+    }
+  }
 
   return createRoster([...merged.values()]);
+}
+
+/**
+ * 把在正文里说过话的人登记到当前卡名下。
+ * 全局一份表，每条带 cards 标记 —— 换卡不会丢，换回来还在。
+ */
+function tagRoles(names, key = currentSpace().key) {
+  if (!active || !key) return false;
+  const want = [...new Set((names ?? []).map(n => String(n ?? '').trim()).filter(Boolean))];
+  if (!want.length) return false;
+
+  const me = context()?.name1 || '';
+  const list = [...(settings.seenRoles ?? [])];
+  let changed = false;
+
+  for (const name of want) {
+    if (name === me) continue;
+    const hit = list.find(r => r?.name === name);
+    if (hit) {
+      const cards = Array.isArray(hit.cards) ? hit.cards : [];
+      if (!cards.includes(key)) { hit.cards = [...cards, key].slice(-30); changed = true; }
+    } else {
+      list.push({ name, cards: [key], at: Date.now() });
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    settings.seenRoles = list.slice(-200);   // 别无限涨
+    saveSettings();
+  }
+  return changed;
+}
+
+/** 从某条正文里抽出说话的人，登记下来 */
+function tagFromStory(id) {
+  try {
+    const m = context()?.chat?.[Number(id)];
+    if (!m || m.is_user || typeof m.mes !== 'string') return;
+    const lines = parseLines(m.mes, settings.protocol ?? DEFAULT_PROTOCOL);
+    if (!lines.length) return;
+    if (tagRoles(lines.map(l => l.role))) {
+      roster = buildRoster();     // 名册变了，重建
+      bridge?.post('space', spaceInfo());
+    }
+  } catch { /* 不打断正文 */ }
 }
 
 const currentCard = () => {
@@ -496,8 +593,9 @@ function bindEvents() {
     try { inject(); } catch (e) { console.warn('[mini-phone] 注入失败：', e?.message); }
   });
 
-  // 一条回复渲染完：投递 <phone>
+  // 一条回复渲染完：投递 <phone>，顺便登记这一楼说过话的人
   add(t.CHARACTER_MESSAGE_RENDERED, (id) => {
+    tagFromStory(id);
     try { deliverFromStory(id).catch(e => console.warn('[mini-phone] 投递失败：', e?.message)); }
     catch { /* 不打断正文 */ }
   });
@@ -519,6 +617,8 @@ function bindEvents() {
       pendingPhone = null;
       quietCount = 0;
       floorCount = 0;
+      // 换卡后把新卡的成员登记一下，这样设置页能立刻看到
+      tagRoles(currentSpace().members);
       bridge?.post('space', spaceInfo());
     } catch { /* 忽略 */ }
   });
@@ -587,6 +687,14 @@ function clampToViewport(left, top, w, h) {
 }
 
 function buildPanel() {
+  // isConnected 检查很重要：酒馆重绘、别的扩展清理 DOM、用户手动删节点，
+  // 都可能让 panel 变成"还在变量里但已经不在页面上"的孤儿。不重建的话，
+  // 之后每次 openPanel 都往一个空气里加 class，看起来就是"点了没反应"。
+  if (panel && !panel.isConnected) {
+    panel = null;
+    iframe = null;
+    bridge = null;
+  }
   if (panel) return panel;
 
   panel = document.createElement('div');
@@ -997,11 +1105,20 @@ function createBridge() {
     /* --- 语音 --- */
     voiceGet: (source) => {
       guard(source);
+      const space = currentSpace();
       return {
         ...publicVoice(),
         engines: Object.values(tts.engines()),
         builtins: BUILTIN_ENGINES.map(b => ({ id: b.id, name: b.name, note: b.note ?? '' })),
-        contacts: roster?.names() ?? [],
+        // 只给"当前这张卡里的人"——不是酒馆所有角色卡
+        contacts: (roster?.list ?? []).map(c => ({
+          name: c.name,
+          source: c.source ?? '',
+          avatar: avatarUrl(c),
+        })),
+        spaceName: space.name,
+        spaceType: space.type,
+        hasSpace: space.key !== 'global',   // false = 现在没打开角色卡
       };
     },
 

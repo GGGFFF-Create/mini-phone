@@ -290,30 +290,86 @@ export async function mount(root, ctx) {
   /* ------------------------------------------------------ 模式 */
 
   section('聊天模式');
-  const modes = [
-    ['story', '剧情内', '角色知道正文里发生的事'],
-    ['hybrid', '半局外', '只给氛围，不纠缠细节'],
-    ['offstory', '局外', '只用人设，聊什么都行'],
+  view.append(el('p', 'settings-note',
+    '决定手机里的聊天"知不知道"正文发生了什么。三种模式花的钱差很多。'));
+
+  const MODES = [
+    {
+      id: 'story',
+      name: '剧情内',
+      badge: '最准 · 最贵',
+      tone: 'accent',
+      what: '角色知道正文最近发生了什么',
+      detail: [
+        '会带上「最近的剧情」：最近 2 段完整原文 + 再往前 6 段的第一句。',
+        '所以角色能接上刚才的对话、记得刚发生的事。',
+      ],
+      good: '正常玩剧情，聊天要跟着剧情走的时候。',
+      cost: '每次请求多 2000-3000 字左右。',
+    },
+    {
+      id: 'hybrid',
+      name: '半局外',
+      badge: '折中',
+      tone: 'mid',
+      what: '只沾一点剧情的味道',
+      detail: [
+        '只带正文开头几句，不给完整情节。',
+        '角色知道"大概最近在一起"，但说不出具体细节。',
+      ],
+      good: '想让角色有点背景感，但不想被剧情绑住。',
+      cost: '比剧情内省一半左右。',
+    },
+    {
+      id: 'offstory',
+      name: '局外',
+      badge: '最省',
+      tone: 'quiet',
+      what: '完全不看正文',
+      detail: [
+        '只用角色卡的人设（性格、描述），一个字都不带正文。',
+        '角色不知道剧情里发生了什么，可以聊任何话题。',
+      ],
+      good: '让角色跳出剧情闲聊，或者干脆当独立聊天用。',
+      cost: '最便宜。',
+    },
   ];
 
-  const modeRow = el('div', 'segmented');
-  for (const [value, label, hint] of modes) {
-    const btn = el('button', `seg ${settings.mode === value ? 'on' : ''}`, label);
-    btn.type = 'button';
-    btn.title = hint;
-    btn.addEventListener('click', async () => {
-      modeRow.querySelectorAll('.seg').forEach(b => b.classList.remove('on'));
-      btn.classList.add('on');
+  const cards = el('div', 'mode-cards');
+  for (const m of MODES) {
+    const on = (settings.mode ?? 'story') === m.id;
+    const card = el('button', `mode-card ${on ? 'on' : ''}`);
+    card.type = 'button';
+    card.dataset.mode = m.id;
+
+    const head = el('div', 'mode-card-head');
+    head.append(el('b', '', m.name));
+    head.append(el('span', `mode-badge ${m.tone}`, m.badge));
+    card.append(head);
+
+    card.append(el('p', 'mode-what', m.what));
+    for (const d of m.detail) card.append(el('p', 'mode-detail', d));
+
+    const foot = el('div', 'mode-foot');
+    foot.append(el('span', 'mode-good', `适合：${m.good}`));
+    foot.append(el('span', 'mode-cost', `开销：${m.cost}`));
+    card.append(foot);
+
+    card.addEventListener('click', async () => {
+      cards.querySelectorAll('.mode-card').forEach(c => c.classList.remove('on'));
+      card.classList.add('on');
       try {
-        settings = await api.saveChat({ mode: value });
-        toast(`已切到「${label}」`);
+        settings = await api.saveChat({ mode: m.id });
+        toast(`已切到「${m.name}」`);
       } catch (e) { toast(e?.message ?? '失败'); }
     });
-    modeRow.append(btn);
+
+    cards.append(card);
   }
-  view.append(modeRow);
+  view.append(cards);
+
   view.append(el('p', 'settings-note',
-    '剧情内：角色只知道自己经历的事，不会提前知道没发生的事。'));
+    '切了立刻生效，下一次手机请求就用新模式。已经在聊的记录不会变。'));
 
   /* ------------------------------------------------------ 预算 */
 
@@ -645,19 +701,32 @@ export async function mount(root, ctx) {
 
     /* 角色音色 */
     section('每个角色的声音');
-    view.append(el('p', 'settings-note',
-      '不配的话用上面的默认音色。配了之后这个角色说台词就用它。'));
+
+    const SOURCE_LABEL = {
+      card: '当前卡',
+      story: '剧情里出现过',
+      manual: '手动加的',
+      voice: '已配音色',
+    };
+
+    view.append(el('p', 'settings-note', (voiceData.contacts?.length ?? 0) > 0
+      ? `只列「${voiceData.spaceName || '当前卡'}」里的人 —— 换角色卡会自动换一批，不是全酒馆的角色。`
+      : voiceData.hasSpace === false
+        ? '现在没有打开角色卡。先去酒馆里选一张卡，这里才会出现可以配音的人。'
+        : `「${voiceData.spaceName || '这张卡'}」里还没有认识的人。聊几轮，正文里说过话的人会自动出现在这里。`));
 
     const voiceList = el('div', 'voice-bind-list');
-    for (const name of voiceData.contacts ?? []) {
+    for (const person of voiceData.contacts ?? []) {
+      const name = person.name;
       const row = el('div', 'field');
       const head = el('div', 'field-head');
       head.append(el('span', 'field-label', name));
+      if (person.source) head.append(el('span', `voice-src src-${person.source}`, SOURCE_LABEL[person.source] ?? ''));
       row.append(head);
 
       const input = el('input', 'field-input');
       input.type = 'text';
-      input.placeholder = '音色 id（留空 = 用默认）';
+      input.placeholder = '音色 id（留空 = 用上面的默认音色）';
       input.value = voiceData.voices?.[name]?.voice ?? '';
       input.addEventListener('change', async () => {
         try {
@@ -670,9 +739,6 @@ export async function mount(root, ctx) {
       });
       row.append(input);
       voiceList.append(row);
-    }
-    if (!(voiceData.contacts ?? []).length) {
-      voiceList.append(el('p', 'settings-note', '还没有联系人（在酒馆里开一张角色卡就有了）'));
     }
     view.append(voiceList);
 
