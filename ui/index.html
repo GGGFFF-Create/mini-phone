@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>小手机</title>
+<link rel="stylesheet" href="theme.css">
+</head>
+<body data-theme="dark" data-layer="lock">
+<div class="phone">
+  <div class="statusbar">
+    <span id="status-time">--:--</span>
+    <span class="status-right"><span class="signal">•••</span><span class="battery">100%</span></span>
+  </div>
+
+  <main id="screen" class="screen">
+
+    <!-- 锁屏 -->
+    <section id="layer-lock" class="layer layer-lock active">
+      <div class="lock-clock">
+        <b id="lock-time">--:--</b>
+        <span id="lock-date"></span>
+      </div>
+      <div class="lock-hint">轻触进入</div>
+    </section>
+
+    <!-- 桌面 -->
+    <section id="layer-home" class="layer layer-home">
+      <p id="home-who" class="home-who"></p>
+      <div id="home-grid" class="home-grid"></div>
+    </section>
+
+    <!-- App -->
+    <section id="layer-app" class="layer layer-app">
+      <header class="app-bar">
+        <button id="btn-back" class="app-back hidden" type="button" aria-label="返回">‹</button>
+        <h1 id="app-title"></h1>
+        <span class="app-actions"></span>
+      </header>
+      <div id="app-host" class="app-host"></div>
+    </section>
+
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+<script type="module" src="phone.js"></script>
+</body>
+</html>

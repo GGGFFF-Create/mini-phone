@@ -1,0 +1,682 @@
+/**
+ * 宿主层 —— 唯一 import SillyTavern 的文件。
+ *
+ * 边界：
+ *   这里负责和酒馆打交道（读角色卡、注入提示词、看正文、投递消息）
+ *   core/ 负责纯逻辑（协议、存储、模型调用、聊天与朋友圈）
+ *   ui/ 负责画界面，不认识 SillyTavern
+ *
+ * 生命周期：酒馆用 <script type="module"> 加载本文件（顶层只准定义），
+ * 然后按 manifest.hooks 调用 enable / disable / dispose。hook 有 5 秒预算。
+ */
+
+import { parseLines, renderLines, plainLines, diagnose, speechRule, KEEP_REPLY, protocolFromTemplate, DEFAULT_PROTOCOL } from './core/protocol.js';
+import { extractPhone, hasPhone, phoneRule } from './core/phone.js';
+import { createRoster } from './core/routes.js';
+import { createStore } from './core/store.js';
+import { createClient } from './core/llm.js';
+import { createChatService } from './core/chat.js';
+import { createMomentsService } from './core/moments.js';
+
+const NS = 'miniPhone';
+const BASE = new URL('.', import.meta.url);
+
+/** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
+const DEFAULTS = {
+  version: 1,
+  enabled: true,
+
+  // 台词协议
+  protocol: { tag: 'tts', sep: '|', fields: ['role', 'emotion', 'text'] },
+  language: '',
+  stripTags: true,          // 发给模型前剥掉 <tts>/<phone>
+  keepExample: true,        // 保留最新一条作格式示例
+
+  // 注入
+  inject: { enabled: true, depth: 2, role: 1 },
+
+  // 手机聊天
+  chat: {
+    mode: 'story',          // story | offstory | hybrid
+    budget: { storyFull: 2, storyBrief: 6, cardText: 1200, personaText: 500, history: 20, loreCount: 3 },
+    proactive: { on: false, every: 3, dailyMax: 3 },
+  },
+
+  // 朋友圈
+  moments: {
+    on: true,
+    every: 5,               // 每 N 条正文，考虑发一条动态
+    reactToMe: true,        // 角色会不会对我的动态点赞评论
+  },
+
+  // 独立模型
+  model: { url: '', key: '', model: '', temperature: 0.8, maxTokens: 400 },
+
+  // 联系人 = 酒馆角色卡 + 手动添加
+  contacts: [],
+
+  ui: { theme: 'dark', lastThread: '', closedAt: 0 },
+};
+
+/* ------------------------------------------------------------ 状态 */
+
+let active = false;
+let settings = null;
+let store = null;
+let roster = null;
+let chatSvc = null;
+let momentsSvc = null;
+let client = null;
+let panel = null;
+let iframe = null;
+let bridge = null;
+
+const listeners = [];     // [source, event, fn]
+let floorCount = 0;       // 已经看了几楼
+let quietCount = 0;       // 连续几楼没在手机上说话
+let pendingPhone = null;  // 待带进正文的手机聊天
+
+const context = () => globalThis.SillyTavern?.getContext();
+const esc = (s) => String(s ?? '');
+
+/* ------------------------------------------------------ 设置规范化 */
+
+function normalizeSettings(raw) {
+  const base = structuredClone(DEFAULTS);
+  const merge = (t, s) => {
+    for (const [k, v] of Object.entries(s ?? {})) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && t[k] && typeof t[k] === 'object') merge(t[k], v);
+      else if (v !== undefined) t[k] = v;
+    }
+    return t;
+  };
+  return merge(base, raw);
+}
+
+function saveSettings() {
+  const ctx = context();
+  if (ctx?.extensionSettings) ctx.extensionSettings[NS] = structuredClone(settings);
+  ctx?.saveSettingsDebounced?.();
+}
+
+/* -------------------------------------------------------- 名册/范围 */
+
+/** 当前这部手机属于谁：群聊 or 角色卡 */
+function currentSpace() {
+  const ctx = context();
+  try {
+    const gid = ctx?.groupId;
+    if (gid !== undefined && gid !== null && gid !== '') {
+      const g = ctx?.groups?.find(x => String(x?.id) === String(gid));
+      return { key: `group:${gid}`, name: g?.name || '群聊', type: 'group', members: (g?.members ?? []).map(a => ctx?.characters?.find(c => c?.avatar === a)?.name).filter(Boolean) };
+    }
+    const ch = ctx?.characters?.[ctx?.characterId];
+    return ch?.avatar
+      ? { key: `card:${ch.avatar}`, name: ch.name || '', type: 'card', members: [ch.name].filter(Boolean) }
+      : { key: 'global', name: '', type: 'card', members: [] };
+  } catch { return { key: 'global', name: '', type: 'card', members: [] }; }
+}
+
+/** 联系人 = 角色卡里的人 + 手动添加的 + 正文里出现过的 */
+function buildRoster() {
+  const ctx = context();
+  const fromCards = (ctx?.characters ?? [])
+    .filter(c => c?.name && c.avatar !== 'none')
+    .map(c => ({ name: c.name, aliases: [], description: c.description ?? '', personality: c.personality ?? '', avatar: c.avatar }));
+  const manual = (settings.contacts ?? []).map(c => ({ ...c, description: c.description ?? '', personality: c.personality ?? '' }));
+
+  // 手动配置优先（可能带别名）
+  const merged = new Map();
+  for (const c of fromCards) merged.set(c.name, c);
+  for (const c of manual) merged.set(c.name, { ...merged.get(c.name), ...c });
+
+  return createRoster([...merged.values()]);
+}
+
+const currentCard = () => {
+  const space = currentSpace();
+  const c = roster?.get(space.name);
+  return c ?? { name: space.name || '对方', description: '', personality: '' };
+};
+
+/* ------------------------------------------------------- 1. 拦截器 */
+
+/**
+ * 发给模型前剥掉 <tts> 和 <phone>。
+ * 保留最新一条作格式示例 —— 全剥会让模型忘记怎么写，全留会烧 token 且越写越花。
+ */
+globalThis.miniPhoneInterceptor = function (chat) {
+  if (!active || !settings?.stripTags) return;
+  try {
+    stripForModel(chat);
+  } catch (e) {
+    console.warn('[mini-phone] 拦截器跳过：', e?.message);
+  }
+};
+
+function stripForModel(chat) {
+  if (!Array.isArray(chat)) return;
+  const proto = settings.protocol ?? DEFAULT_PROTOCOL;
+
+  let keep = -1;
+  if (settings.keepExample) {
+    for (let i = chat.length - 1; i >= 0; i--) {
+      const m = chat[i];
+      if (m && !m.is_user && typeof m.mes === 'string' && /<tts\b/i.test(m.mes)) { keep = i; break; }
+    }
+  }
+
+  for (let i = 0; i < chat.length; i++) {
+    const m = chat[i];
+    if (typeof m?.mes !== 'string') continue;
+    if (!/<(?:tts|phone)\b/i.test(m.mes)) continue;
+
+    let mes = m.mes;
+    // 全部剥掉 <phone>（手机内容不进正文历史）
+    mes = mes.replace(/<phone\b[^>]*>[\s\S]*?<\/phone\s*>/gi, '').trimEnd();
+    // <tts> 只在非示例楼层剥
+    if (i !== keep) mes = plainLines(mes, proto);
+    if (mes !== m.mes) chat[i] = { ...m, mes };
+  }
+}
+
+/* --------------------------------------------------------- 2. 注入 */
+
+function clearInject() {
+  const ctx = context();
+  if (!ctx?.setExtensionPrompt) return;
+  for (const key of Object.keys(ctx.extensionPrompts ?? {})) {
+    if (key.startsWith('miniPhone.')) ctx.setExtensionPrompt(key, '', -1, 0);
+  }
+}
+
+/**
+ * 注入三类东西：
+ *   1. 台词格式规则
+ *   2. <phone> 规则（只在轮到手机时）
+ *   3. 待带进正文的手机聊天（一次性）
+ * 最后固定追加"只加不减"，否则角色卡的状态栏/选项会被吃掉。
+ */
+function inject() {
+  const ctx = context();
+  if (!ctx?.setExtensionPrompt || !settings.inject.enabled) return;
+  clearInject();
+
+  const space = currentSpace();
+  const proto = settings.protocol ?? DEFAULT_PROTOCOL;
+  const depth = Math.max(0, Number(settings.inject.depth) || 0);
+  const role = Number(settings.inject.role ?? 1);
+  const contacts = roster?.names() ?? [];
+
+  // 1. 台词规则
+  ctx.setExtensionPrompt('miniPhone.speech', speechRule(proto, { language: settings.language }), 1, depth, false, role);
+
+  // 2. <phone> 规则（回合判断在 shouldPhoneNow()）
+  const phoneText = shouldPhoneNow() ? phoneRule({
+    user: ctx.name1 || '我',
+    contacts,
+    groups: [],
+    canDraw: false,
+  }) : '';
+  if (phoneText) ctx.setExtensionPrompt('miniPhone.phone', phoneText, 1, depth, false, role);
+
+  // 3. 待带进正文的手机聊天
+  if (pendingPhone) {
+    ctx.setExtensionPrompt('miniPhone.bring', pendingPhone.text, 1, depth, false, role);
+  }
+
+  // 4. 兜底：规则只加不减
+  ctx.setExtensionPrompt('miniPhone.keep', KEEP_REPLY, 1, 0, false, 0);
+}
+
+/** 轮到手机了吗（回合制：不是每楼都发） */
+function shouldPhoneNow() {
+  const p = settings.chat.proactive ?? {};
+  if (!p.on) return false;
+  if (p.dailyMax > 0 && todayCount() >= p.dailyMax) return false;
+  return !(p.every > 0) || quietCount >= p.every - 1;
+}
+
+const DAY_KEY = 'miniPhone.day';
+function todayCount() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DAY_KEY) || 'null');
+    const today = new Date().toDateString();
+    return raw?.day === today ? (raw.n ?? 0) : 0;
+  } catch { return 0; }
+}
+function bumpToday() {
+  try {
+    const today = new Date().toDateString();
+    const n = todayCount() + 1;
+    localStorage.setItem(DAY_KEY, JSON.stringify({ day: today, n }));
+  } catch { /* 只影响本会话 */ }
+}
+
+/* ------------------------------------------------------- 3. 投递 */
+
+/**
+ * 一条正文回复生成完：抽出 <phone> 投递到聊天和朋友圈。
+ * @returns {Promise<number>} 投递了几条
+ */
+async function deliverFromStory(messageId) {
+  const ctx = context();
+  const idx = Number.isInteger(Number(messageId)) ? Number(messageId) : (ctx?.chat?.length ?? 1) - 1;
+  const m = ctx?.chat?.[idx];
+  if (!m || m.is_user || m.is_system || typeof m.mes !== 'string') return 0;
+  if (!settings.chat.proactive?.on && !settings.moments?.on) return 0;
+
+  const known = roster?.names() ?? [];
+  const extracted = extractPhone(m.mes, {
+    known,
+    resolve: (n) => roster?.resolve(n) ?? n,   // 正文里写"小柚"，要归到"柚子"
+  });
+  if (!extracted.private.length && !extracted.groups.length) return 0;
+
+  const origin = { floor: idx, ver: hashOf(m.mes) };
+  const chatItems = [...extracted.private];
+  const momentItems = chatItems.filter(i => i.kind === 'moment');
+
+  let sent = 0;
+  const chatOnly = { private: chatItems.filter(i => i.kind !== 'moment'), groups: extracted.groups };
+  if (chatOnly.private.length || chatOnly.groups.length) {
+    const results = await chatSvc.receive(chatOnly, origin);
+    sent += results.reduce((n, r) => n + r.items.length, 0);
+    for (const r of results) notify(`${r.name} 发来 ${r.items.length} 条`);
+  }
+  if (settings.moments?.on && momentItems.length) {
+    const added = await momentsSvc.ingest(momentItems, origin);
+    sent += added.length;
+    if (added.length) notify(`${added.length} 条新动态`);
+  }
+
+  if (sent) { quietCount = 0; bumpToday(); }
+  return sent;
+}
+
+const hashOf = (s) => {
+  let h = 0;
+  for (const c of String(s)) h = (h * 31 + c.codePointAt(0)) | 0;
+  return (h >>> 0).toString(36);
+};
+
+/* ------------------------------------------------------- 4. 事件 */
+
+function bindEvents() {
+  const ctx = context();
+  const es = ctx?.eventSource;
+  const t = ctx?.eventTypes;
+  if (!es?.on || !t) return;
+
+  const add = (evt, fn) => {
+    if (!evt) return;
+    es.on(evt, fn);
+    listeners.push([es, evt, fn]);
+  };
+
+  // 生成前注入
+  add(t.GENERATION_AFTER_COMMANDS, () => {
+    try { inject(); } catch (e) { console.warn('[mini-phone] 注入失败：', e?.message); }
+  });
+
+  // 一条回复渲染完：投递 <phone>
+  add(t.CHARACTER_MESSAGE_RENDERED, (id) => {
+    try { deliverFromStory(id).catch(e => console.warn('[mini-phone] 投递失败：', e?.message)); }
+    catch { /* 不打断正文 */ }
+  });
+
+  // 重抽：撤回这一楼之前投递的
+  add(t.MESSAGE_SWIPED, (id) => {
+    try {
+      const m = ctx?.chat?.[id];
+      if (!m) return;
+      chatSvc.withdraw(Number(id), hashOf(m.mes)).catch(() => {});
+    } catch { /* 忽略 */ }
+  });
+
+  // 换聊天/换卡：清注入、重建名册
+  add(t.CHAT_CHANGED, () => {
+    try {
+      clearInject();
+      roster = buildRoster();
+      pendingPhone = null;
+      quietCount = 0;
+      floorCount = 0;
+      bridge?.post('space', spaceInfo());
+    } catch { /* 忽略 */ }
+  });
+}
+
+/* ------------------------------------------------------- 5. 面板 */
+
+function mountEntry() {
+  const menu = document.getElementById('extensionsMenu');
+  if (menu && !document.getElementById('miniPhone-item')) {
+    const item = document.createElement('div');
+    item.id = 'miniPhone-item';
+    item.className = 'list-group-item flex-container flexGap5 interactable';
+    item.tabIndex = 0;
+    item.innerHTML = '<i class="fa-solid fa-mobile-screen-button"></i><span>小手机</span>';
+    item.addEventListener('click', openPanel);
+    menu.append(item);
+  }
+}
+
+function unmountEntry() {
+  document.getElementById('miniPhone-item')?.remove();
+}
+
+function buildPanel() {
+  if (panel) return panel;
+  panel = document.createElement('dialog');
+  panel.id = 'miniPhone-panel';
+  panel.setAttribute('aria-label', '小手机');
+  iframe = document.createElement('iframe');
+  iframe.title = '小手机';
+  iframe.src = new URL('ui/index.html', BASE).href;
+  iframe.setAttribute('allow', 'microphone; autoplay');
+  panel.append(iframe);
+  panel.addEventListener('close', () => bridge?.post('visibility', { open: false }));
+  document.body.append(panel);
+
+  // 同源直调：iframe 里拿 parent.__miniPhone 就能用
+  bridge = createBridge();
+  globalThis.__miniPhone = bridge.api;
+  return panel;
+}
+
+function openPanel() {
+  buildPanel();
+  if (!panel.open) { panel.showModal(); }
+  // 等 iframe 就绪再推数据
+  const push = () => bridge?.post('init', spaceInfo());
+  if (iframe?.contentWindow?.__miniPhoneReady) push();
+  else setTimeout(push, 400);
+}
+
+function closePanel() {
+  if (panel?.open) panel.close();
+}
+
+function spaceInfo() {
+  const ctx = context();
+  const space = currentSpace();
+  return {
+    name: space.name,
+    type: space.type,
+    key: space.key,
+    user: ctx?.name1 || '我',
+    contacts: (roster?.list ?? []).map(c => ({ name: c.name, avatar: avatarUrl(c) })),
+    hasModel: !!client?.config?.url,
+    settings: publicSettings(),
+  };
+}
+
+function avatarUrl(c) {
+  const ctx = context();
+  const ch = ctx?.characters?.find(x => x.name === c.name);
+  if (!ch?.avatar || ch.avatar === 'none') return '';
+  try { return ctx?.getThumbnailUrl?.('avatar', ch.avatar) ?? `/thumbnail?type=avatar&file=${encodeURIComponent(ch.avatar)}`; }
+  catch { return ''; }
+}
+
+function publicSettings() {
+  return {
+    mode: settings.chat.mode,
+    budget: settings.chat.budget,
+    proactive: settings.chat.proactive,
+    moments: settings.moments,
+    model: { url: settings.model.url, model: settings.model.model, hasKey: !!settings.model.key },
+    theme: settings.ui.theme,
+  };
+}
+
+/* ------------------------------------------------------- 6. 桥 */
+
+/**
+ * 同源直调桥。
+ * 不做 postMessage —— 单人项目里那套样板代码不值当。
+ * 但保留来源校验：页面上任何一个 iframe 都不该能冒充手机。
+ */
+function createBridge() {
+  const guard = (source) => {
+    if (!active) throw new Error('扩展没有启用');
+    if (source && iframe?.contentWindow && source !== iframe.contentWindow) {
+      throw new Error('来源不匹配');
+    }
+  };
+
+  const api = {
+    version: '0.1.0',
+
+    /* --- 初始化 --- */
+    init: (source) => { guard(source); return spaceInfo(); },
+
+    /* --- 设置 --- */
+    getSettings: (source) => { guard(source); return publicSettings(); },
+    saveModel: (source, patch) => {
+      guard(source);
+      Object.assign(settings.model, patch ?? {});
+      saveSettings();
+      rebuildClient();
+      return { ok: true, hasModel: !!client?.config?.url };
+    },
+    testModel: async (source) => {
+      guard(source);
+      rebuildClient();
+      if (!client?.config?.url) throw new Error('还没填接口地址');
+      const reply = await client.ping();
+      return { ok: true, reply };
+    },
+    saveChat: (source, patch) => {
+      guard(source);
+      Object.assign(settings.chat, patch ?? {});
+      saveSettings();
+      return publicSettings();
+    },
+    saveMoments: (source, patch) => {
+      guard(source);
+      Object.assign(settings.moments, patch ?? {});
+      saveSettings();
+      return publicSettings();
+    },
+    saveUi: (source, patch) => {
+      guard(source);
+      Object.assign(settings.ui, patch ?? {});
+      saveSettings();
+      return true;
+    },
+
+    /* --- 聊天 --- */
+    threads: (source) => { guard(source); return chatSvc.listThreads(); },
+    thread: (source, id) => { guard(source); return store.threads.get(id); },
+    markRead: (source, id) => { guard(source); return store.threads.markRead(id); },
+    unread: (source) => { guard(source); return chatSvc.unreadCount(); },
+
+    send: async (source, threadId, text) => {
+      guard(source);
+      rebuildClient();
+      if (!client?.config?.url) throw new Error('还没配置模型接口（设置 → 模型）');
+      return chatSvc.send(threadId, text);
+    },
+
+    ensureThread: (source, opts) => { guard(source); return chatSvc.ensureThread(opts); },
+
+    /** 把手机聊天带进下一次正文（注入一次，之后清空） */
+    bringToStory: async (source, threadId) => {
+      guard(source);
+      const packed = await chatSvc.packForStory(threadId);
+      if (!packed) throw new Error('这个会话还是空的');
+      pendingPhone = packed;
+      inject();
+      return { ok: true, count: packed.count };
+    },
+
+    /** 上下文预览：用户能看到这次请求会发多少字 */
+    preview: (source, threadId) => { guard(source); return chatSvc.preview(threadId); },
+
+    /* --- 朋友圈 --- */
+    moments: (source) => { guard(source); return momentsSvc.list(); },
+    momentsUnread: (source) => { guard(source); return momentsSvc.unreadCount(); },
+    momentsRead: (source) => { guard(source); return momentsSvc.markAllRead(); },
+
+    composeMoment: async (source, author) => {
+      guard(source);
+      rebuildClient();
+      if (!client?.config?.url) throw new Error('还没配置模型接口');
+      return momentsSvc.compose({ author });
+    },
+    reactMoment: async (source, id, author) => {
+      guard(source);
+      rebuildClient();
+      if (!client?.config?.url) throw new Error('还没配置模型接口');
+      return momentsSvc.react(id, { author });
+    },
+    likeMoment: (source, id) => { guard(source); return momentsSvc.toggleLike(id); },
+    commentMoment: (source, id, text) => { guard(source); return momentsSvc.addComment(id, text); },
+    removeMoment: (source, id) => { guard(source); return momentsSvc.remove(id); },
+
+    /* --- 诊断 --- */
+    diagnose: (source, messageId) => {
+      guard(source);
+      const m = context()?.chat?.[messageId];
+      if (!m) return { problems: ['找不到这条消息'] };
+      return { problems: diagnose(m.mes, settings.protocol), lines: parseLines(m.mes, settings.protocol).length };
+    },
+
+    close: (source) => { guard(source); closePanel(); return true; },
+  };
+
+  /**
+   * 绑定来源：iframe 里调一次 api.bind(window)，之后所有方法都不用再传 window。
+   * 不这么做的话，每个调用点都要写 api.threads(window) —— 又长又容易漏。
+   */
+  api.bind = (source) => {
+    const bound = {};
+    for (const [name, fn] of Object.entries(api)) {
+      if (typeof fn !== 'function' || name === 'bind') continue;
+      bound[name] = (...args) => fn(source, ...args);
+    }
+    return bound;
+  };
+
+  return {
+    api,
+    /** 主页面 → iframe 的单向推送 */
+    post(type, payload) {
+      try { iframe?.contentWindow?.__miniPhoneReceive?.(type, payload); }
+      catch (e) { console.warn('[mini-phone] 推送失败：', e?.message); }
+    },
+  };
+}
+
+/* --------------------------------------------------- 7. 模型客户端 */
+
+function rebuildClient() {
+  client = createClient({
+    url: settings.model.url,
+    key: settings.model.key,
+    model: settings.model.model,
+    temperature: settings.model.temperature,
+    maxTokens: settings.model.maxTokens,
+  });
+}
+
+/* ------------------------------------------------------------ 工具 */
+
+function notify(text) {
+  if (globalThis.toastr?.info) globalThis.toastr.info(text, '小手机');
+  else console.info('[mini-phone]', text);
+}
+
+/* ------------------------------------------------------- 8. 生命周期 */
+
+export async function enable() {
+  if (active) return;
+  const ctx = context();
+
+  if (!ctx?.extensionSettings || !ctx?.saveSettingsDebounced) {
+    console.warn('[mini-phone] 酒馆上下文不完整，跳过启用');
+    return;
+  }
+  if (!ctx.setExtensionPrompt || !ctx.eventSource) {
+    notice?.('酒馆版本太旧，缺 setExtensionPrompt / eventSource');
+    return;
+  }
+
+  settings = normalizeSettings(ctx.extensionSettings[NS]);
+  ctx.extensionSettings[NS] = structuredClone(settings);
+
+  // 迁移旧格式串
+  if (typeof settings.protocol === 'string') {
+    settings.protocol = protocolFromTemplate(settings.protocol);
+  }
+
+  roster = buildRoster();
+  rebuildClient();
+
+  store = createStore({ scope: () => currentSpace().key });
+
+  const serviceDeps = {
+    store,
+    client: () => client,          // 传函数：设置里改了接口不用重建服务
+    getCard: currentCard,
+    getStory: () => context()?.chat ?? [],
+    getLore: (scanText) => {
+      try {
+        const wi = context()?.getWorldInfoPrompt?.(scanText, settings.chat.budget.loreCount, true, false);
+        return wi?.string ?? '';
+      } catch { return ''; }
+    },
+    getRoster: () => roster,
+    settings: () => ({
+      user: context()?.name1 || '我',
+      userPersona: String(context()?.powerUserSettings?.persona_description ?? '').slice(0, 1500),
+      mode: settings.chat.mode,
+      budget: settings.chat.budget,
+      protocol: settings.protocol,
+    }),
+    emit: (type, payload) => bridge?.post(type, payload),
+  };
+
+  chatSvc = createChatService(serviceDeps);
+  momentsSvc = createMomentsService(serviceDeps);
+
+  mountEntry();
+  bindEvents();
+  inject();
+
+  active = true;
+  console.info('[mini-phone] enabled');
+}
+
+export async function disable() {
+  if (!active) return;
+  active = false;
+
+  for (const [es, evt, fn] of listeners) { try { es.removeListener(evt, fn); } catch {} }
+  listeners.length = 0;
+
+  clearInject();
+  unmountEntry();
+  closePanel();
+  panel?.remove();
+  panel = null;
+  iframe = null;
+  delete globalThis.__miniPhone;
+  bridge = null;
+
+  chatSvc = null;
+  momentsSvc = null;
+  store = null;
+  roster = null;
+  client = null;
+  settings = null;
+  pendingPhone = null;
+
+  console.info('[mini-phone] disabled');
+}
+
+export function dispose() {
+  return disable();
+}

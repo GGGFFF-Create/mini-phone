@@ -1,0 +1,31 @@
+# 依赖
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 临时文件
+*.log
+tmp-*.mjs
+*.tmp
+
+# 密钥（永远不要提交）
+.env
+.env.*
+secrets.json
+
+# 设计笔记（内部文档，不随代码公开）
+# 想公开就把下面四行删掉
+ARCHITECTURE.md
+CONTEXT.md
+BUDGET.md
+PHONE-LINK.md
