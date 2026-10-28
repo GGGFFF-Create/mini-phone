@@ -11,6 +11,34 @@ import { applyEmotion, fill, fillDeep, pick } from './engine.js';
  * 拼出一次合成的请求。
  * @returns {{url: string, init: RequestInit, vars: object, emotionUsed: string}}
  */
+/**
+ * 中转地址（反代）。
+ *
+ * 只替换域名部分，路径和查询原样保留：
+ *   原  https://api.openai.com/v1/audio/speech
+ *   中转 https://my-proxy.com
+ *   结果 https://my-proxy.com/v1/audio/speech
+ *
+ * 中转地址带路径也行（很多反代是 https://proxy.com/openai 这种前缀），
+ * 这时会拼在目标路径前面。
+ */
+export function applyProxy(url, proxy) {
+  const p = String(proxy ?? '').trim();
+  if (!p) return url;
+  if (!/^https?:\/\//i.test(p)) return url;      // 不是完整地址就当没填
+
+  try {
+    const base = (typeof location !== 'undefined' && location.href) || 'http://localhost/';
+    const target = new URL(url, base);
+    const mid = new URL(p, base);
+    const prefix = mid.pathname.replace(/\/+$/, '');
+    const path = target.pathname.startsWith('/') ? target.pathname : `/${target.pathname}`;
+    return `${mid.origin}${prefix}${path}${target.search}`;
+  } catch {
+    return url;
+  }
+}
+
 export function buildRequest(engine, line = {}, { language = '' } = {}) {
   const { text, used } = applyEmotion(line.text ?? '', line.emotion ?? '', engine);
 
@@ -32,7 +60,10 @@ export function buildRequest(engine, line = {}, { language = '' } = {}) {
     speedPercent: Math.round(speed * 100),
   };
 
-  const url = fill(engine.endpoint ?? '', vars);
+  let url = fill(engine.endpoint ?? '', vars);
+  // 填了中转就走中转，没填就用 endpoint 拼出来的原地址
+  url = applyProxy(url, engine.proxy);
+
   const headers = fillDeep(engine.headers ?? {}, vars);
   const body = fillDeep(engine.body ?? {}, vars);
 

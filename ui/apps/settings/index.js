@@ -22,9 +22,23 @@ export async function mount(root, ctx) {
   const view = el('div', 'view settings-view');
   root.append(view);
 
+  /*
+   * 三个二级页。
+   * 设置项从"一屏到底"改成"首页选一类，进去看细节" ——
+   * 之前九个区块堆在一起，找东西得滚很久。
+   */
+  const pages = {
+    home: el('div', 'settings-page'),
+    general: el('div', 'settings-page'),
+    chat: el('div', 'settings-page'),
+    voice: el('div', 'settings-page'),
+  };
+  view.append(pages.home, pages.general, pages.chat, pages.voice);
+  let cur = pages.general;      // 下面各段渲染前会改它
+
   /* ------------------------------------------------------ 小工具 */
 
-  const section = (title) => view.append(el('h2', 'settings-title', title));
+  const section = (title) => cur.append(el('h2', 'settings-title', title));
 
   const field = ({ label, value = '', placeholder = '', type = 'text', hint = '' }) => {
     const wrap = el('label', 'field');
@@ -69,9 +83,10 @@ export async function mount(root, ctx) {
   };
 
   /** JSON 编辑框：请求头和请求体用它，让用户能改任何字段 */
-  const jsonEditor = (label, value, onChange, rows = 4) => {
+  const jsonEditor = (label, value, onChange, rows = 4, note = '') => {
     const wrap = el('div', 'field');
     wrap.append(el('span', 'field-label', label));
+    if (note) wrap.append(el('span', 'field-hint', note));
 
     const ta = el('textarea', 'field-textarea');
     ta.rows = rows;
@@ -98,15 +113,16 @@ export async function mount(root, ctx) {
 
   /* ------------------------------------------------------ 模型 */
 
+  cur = pages.chat;
   section('模型接口');
-  view.append(el('p', 'settings-note',
-    '这是手机聊天和朋友圈用的独立通道，和酒馆的正文模型分开算额度。可以存多套配置随时切。'));
+  cur.append(el('p', 'settings-note',
+    '手机聊天和朋友圈用这条通道。可存多套，随时切。'));
 
   let llmData = null;
   try { llmData = await api.llmGet(); } catch { /* 忽略 */ }
 
   if (!llmData) {
-    view.append(el('p', 'settings-note', '模型模块没加载起来，看看控制台。'));
+    cur.append(el('p', 'settings-note', '模型模块没加载起来，看看控制台。'));
   } else {
     /* 配置选择 */
     const profileSelect = el('select', 'field-input');
@@ -140,10 +156,10 @@ export async function mount(root, ctx) {
 
     const statusHint = el('span', 'field-hint', '');
     llmRow.append(newBtn, statusHint);
-    view.append(llmRow);
+    cur.append(llmRow);
 
     const llmEditor = el('div', 'engine-editor');
-    view.append(llmEditor);
+    cur.append(llmEditor);
 
     function renderLlmEditor() {
       llmEditor.innerHTML = '';
@@ -170,9 +186,13 @@ export async function mount(root, ctx) {
       };
 
       mk('名称', 'name', { placeholder: '这套配置叫什么' });
-      mk('接口根地址', 'base', { placeholder: 'https://api.deepseek.com/v1', hint: '填到 /v1。下面的 endpoint 用 {{base}} 引用它' });
+      mk('接口地址', 'base', { placeholder: 'https://api.deepseek.com/v1', hint: '填到 /v1' });
+      mk('中转地址', 'proxy', {
+        placeholder: 'https://你的反代域名',
+        hint: '只换域名，路径保留。留空 = 直连',
+      });
       mk('API Key', 'key', { type: 'password' });
-      mk('模型名', 'model', { placeholder: 'deepseek-chat / gpt-4o-mini', hint: '手机聊天建议用便宜快的' });
+      mk('模型名', 'model', { placeholder: 'deepseek-chat / gpt-4o-mini', hint: '聊天建议用便宜快的' });
 
       const temp = slider({
         label: '温度（越高越放飞）',
@@ -210,7 +230,7 @@ export async function mount(root, ctx) {
         adv.append(jsonEditor('额外请求头（JSON）', p.headers, (v) => saveLlm({ headers: v }), 3));
         adv.append(jsonEditor('额外请求体（JSON）', p.body, (v) => saveLlm({ body: v }), 4));
         adv.append(el('p', 'settings-note',
-          '额外请求体里可以放 top_p、presence_penalty、stop 这些标准字段，会被合并进请求。'));
+          '可加 top_p、stop 等标准字段，会合并进请求。'));
 
         const st = toggle({ label: '要流式输出', checked: p.stream === true, hint: '有些中转不支持，报错就关掉' });
         st.input.addEventListener('change', () => saveLlm({ stream: st.input.checked }));
@@ -282,16 +302,17 @@ export async function mount(root, ctx) {
     renderLlmEditor();
 
     if (!llmData.ready) {
-      view.append(el('p', 'settings-note',
+      cur.append(el('p', 'settings-note',
         '⚠️ 现在这套还没填完整，手机聊天会提示"还没配置模型"。'));
     }
   }
 
   /* ------------------------------------------------------ 模式 */
 
+  cur = pages.general;
   section('聊天模式');
-  view.append(el('p', 'settings-note',
-    '决定手机里的聊天"知不知道"正文发生了什么。三种模式花的钱差很多。'));
+  cur.append(el('p', 'settings-note',
+    '决定聊天知不知道正文。开销差别很大。'));
 
   const MODES = [
     {
@@ -366,16 +387,16 @@ export async function mount(root, ctx) {
 
     cards.append(card);
   }
-  view.append(cards);
+  cur.append(cards);
 
-  view.append(el('p', 'settings-note',
-    '切了立刻生效，下一次手机请求就用新模式。已经在聊的记录不会变。'));
+  cur.append(el('p', 'settings-note',
+    '立刻生效。已有记录不变。'));
 
   /* ------------------------------------------------------ 预算 */
 
   section('上下文预算');
-  view.append(el('p', 'settings-note',
-    '数字越大越准，也越贵。改完下一次请求就生效，可以在这里直接看效果。'));
+  cur.append(el('p', 'settings-note',
+    '越大越准越贵。下次请求生效。'));
 
   const b = settings.budget ?? {};
   const full = slider({
@@ -415,7 +436,7 @@ export async function mount(root, ctx) {
     } catch (e) { toast(e?.message ?? '失败'); }
   });
 
-  view.append(full.wrap, brief.wrap, cardLen.wrap, history.wrap, saveBudget);
+  cur.append(full.wrap, brief.wrap, cardLen.wrap, history.wrap, saveBudget);
 
   /* ------------------------------------------------------ 主动 */
 
@@ -444,7 +465,7 @@ export async function mount(root, ctx) {
     } catch (e) { toast(e?.message ?? '失败'); }
   });
 
-  view.append(pOn.wrap, pEvery.wrap, pMax.wrap, saveProactive);
+  cur.append(pOn.wrap, pEvery.wrap, pMax.wrap, saveProactive);
 
   /* ------------------------------------------------------ 朋友圈 */
 
@@ -462,10 +483,11 @@ export async function mount(root, ctx) {
     } catch (e) { toast(e?.message ?? '失败'); }
   });
 
-  view.append(mOn.wrap, mEvery.wrap, saveMoments);
+  cur.append(mOn.wrap, mEvery.wrap, saveMoments);
 
   /* ------------------------------------------------------ 语音 */
 
+  cur = pages.voice;
   section('语音');
 
   let voiceData = null;
@@ -481,10 +503,10 @@ export async function mount(root, ctx) {
   let renderVoiceSection = async () => {};
 
   if (!voiceData) {
-    view.append(el('p', 'settings-note', '语音模块没加载起来，看看控制台有没有报错。'));
+    cur.append(el('p', 'settings-note', '语音模块没加载起来，看看控制台有没有报错。'));
   } else {
-    view.append(el('p', 'settings-note',
-      '语音走独立接口，和聊天模型分开配。点正文里的声波按钮就会念。'));
+    cur.append(el('p', 'settings-note',
+      '独立接口，和聊天分开配。'));
 
     /* 总开关 */
     const vOn = toggle({ label: '开启动语音', checked: voiceData.enabled, hint: '关掉之后正文不显示声波按钮' });
@@ -492,7 +514,7 @@ export async function mount(root, ctx) {
       try { voiceData = { ...voiceData, ...(await api.voiceSave({ enabled: vOn.input.checked })) }; }
       catch (e) { toast(e?.message ?? '失败'); }
     });
-    view.append(vOn.wrap);
+    cur.append(vOn.wrap);
 
     /* 语速：引擎上也能单独配，引擎配置优先 */
     const speedField = el('div', 'field');
@@ -520,7 +542,7 @@ export async function mount(root, ctx) {
     });
     speedRow.append(speedRange);
     speedField.append(speedRow);
-    view.append(speedField);
+    cur.append(speedField);
 
     /* 试听用的句子 */
     const previewField = el('div', 'field');
@@ -537,9 +559,9 @@ export async function mount(root, ctx) {
       } catch (e) { toast(e?.message ?? '失败'); }
     });
     previewField.append(previewInput);
-    view.append(previewField);
-    view.append(el('p', 'settings-note',
-      '试听会真的合成一次（会花钱）。台词里配了音色的人，在下面每个人的「试听」按钮上就能听。'));
+    cur.append(previewField);
+    cur.append(el('p', 'settings-note',
+      '试听会真的合成，会计费。'));
 
     /* 引擎选择 + 新建 */
     const engineSelect = el('select', 'field-input');
@@ -575,11 +597,11 @@ export async function mount(root, ctx) {
 
     const engineHint = el('span', 'field-hint', '');
     engineRow.append(newBtn, engineHint);
-    view.append(engineRow);
+    cur.append(engineRow);
 
     /* 引擎编辑区 */
     const editor = el('div', 'engine-editor');
-    view.append(editor);
+    cur.append(editor);
 
     function renderEngineEditor() {
       editor.innerHTML = '';
@@ -604,15 +626,22 @@ export async function mount(root, ctx) {
       };
 
       if (!isBrowser) {
-        mk('接口根地址', 'base', { placeholder: 'https://api.xxx.com/v1', hint: '下面的地址里可以用 {{base}} 引用它' });
+        mk('接口根地址', 'base', { placeholder: 'https://api.xxx.com/v1', hint: '下面地址里用 {{base}} 引用它' });
+
+        /* 中转（反代）：填了就把域名换成它 */
+        mk('中转地址', 'proxy', {
+          placeholder: 'https://你的反代域名',
+          hint: '只换域名，路径保留。留空 = 直连',
+        });
+
         mk('API Key', 'key', { type: 'password', placeholder: '留空则不修改' });
         mk('模型名', 'model', { placeholder: 'tts-1 / s1 / speech-02-hd' });
 
         const ep = field({
-          label: '请求地址（endpoint）',
+          label: '请求地址',
           value: eng.endpoint ?? '',
           placeholder: '{{base}}/audio/speech',
-          hint: '可以用 {{base}} {{key}} {{model}} {{voice}} {{text}} {{language}}',
+          hint: '{{base}} {{voice}} {{text}} … 见下方变量表',
         });
         ep.input.addEventListener('change', () => saveField('endpoint', ep.input.value));
         editor.append(ep.wrap);
@@ -621,10 +650,8 @@ export async function mount(root, ctx) {
         editor.append(jsonEditor('请求头（JSON）', eng.headers, (v) => saveField('headers', v)));
 
         /* 请求体（JSON）—— 这里是"不预制"的极致：整段可改 */
-        const bodyHint = el('p', 'settings-note',
-          '请求体里必须有 {{text}}，引擎才知道要念什么。voice / model 也可以用变量。');
-        editor.append(bodyHint);
-        editor.append(jsonEditor('请求体（JSON）', eng.body, (v) => saveField('body', v), 6));
+        editor.append(jsonEditor('请求体（JSON）', eng.body, (v) => saveField('body', v), 6,
+          '必须含 {{text}}，否则引擎不知道念什么。'));
 
         /* 响应类型 */
         const respSelect = el('select', 'field-input');
@@ -760,7 +787,7 @@ export async function mount(root, ctx) {
 
     // 这一块会整段重建：换角色卡时宿主会推 space 事件，外壳调 refresh()
     const voiceSection = el('div', 'voice-section');
-    view.append(voiceSection);
+    cur.append(voiceSection);
 
     renderVoiceSection = async function rebuild() {
       // 每次重建都重新问一次宿主：用户可能刚换卡
@@ -839,7 +866,7 @@ export async function mount(root, ctx) {
     /* 缓存 */
     section('语音缓存');
     const cacheInfo = el('p', 'settings-note', '统计中…');
-    view.append(cacheInfo);
+    cur.append(cacheInfo);
 
     const refreshCache = async () => {
       try {
@@ -861,11 +888,12 @@ export async function mount(root, ctx) {
     refreshBtn.type = 'button';
     refreshBtn.addEventListener('click', refreshCache);
     cacheRow.append(clearBtn, refreshBtn);
-    view.append(cacheRow);
+    cur.append(cacheRow);
   }
 
   /* ------------------------------------------------------ 外观 */
 
+  cur = pages.general;
   section('外观');
   const themeRow = el('div', 'segmented');
   for (const [value, label] of [['dark', '深色'], ['light', '浅色']]) {
@@ -880,14 +908,69 @@ export async function mount(root, ctx) {
     });
     themeRow.append(btn);
   }
-  view.append(themeRow);
+  cur.append(themeRow);
 
-  setTitle('设置');
+  /* ------------------------------------------------------ 首页与路由 */
+
+  let page = 'home';
+
+  function buildHome() {
+    pages.home.innerHTML = '';
+
+    const hero = el('div', 'settings-hero');
+    hero.append(el('small', 'settings-hero-small', 'SETTINGS'));
+    hero.append(el('b', 'settings-hero-title', '设置'));
+    pages.home.append(hero);
+
+    const MENU = [
+      { id: 'general', icon: '⚙️', name: '常规', desc: '聊天模式 · 上下文长度 · 主动消息 · 外观' },
+      { id: 'chat', icon: '🧠', name: '聊天模型', desc: '接口地址 · 中转 · Key · 模型名' },
+      { id: 'voice', icon: '🔊', name: '语音模型', desc: '引擎 · 中转 · 音色 · 语速 · 缓存' },
+    ];
+
+    const menu = el('div', 'settings-menu');
+    for (const item of MENU) {
+      const row = el('button', 'settings-menu-row');
+      row.type = 'button';
+      row.append(el('span', 'settings-menu-icon', item.icon));
+
+      const main = el('span', 'settings-menu-main');
+      main.append(el('b', '', item.name));
+      main.append(el('span', '', item.desc));
+      row.append(main);
+      row.append(el('span', 'row-chevron', '›'));
+
+      row.addEventListener('click', () => go(item.id));
+      menu.append(row);
+    }
+    pages.home.append(menu);
+
+    pages.home.append(el('p', 'settings-note',
+      '改动立刻保存。'));
+  }
+
+  const TITLES = { home: '设置', general: '常规', chat: '聊天模型', voice: '语音模型' };
+
+  function go(name) {
+    page = pages[name] ? name : 'home';
+    for (const [k, node] of Object.entries(pages)) node.classList.toggle('on', k === page);
+    setTitle(TITLES[page] ?? '设置');
+    if (page === 'home') buildHome();
+    view.scrollTop = 0;
+    if (page === 'voice') renderVoiceSection().catch(() => {});
+  }
+
+  buildHome();
+  go('home');
 
   return {
     title: '设置',
-    back: () => false,
-    /** 宿主推 space 事件（换了角色卡）时调用：只重建音色区，不打断别处的输入 */
-    refresh: () => { renderVoiceSection().catch(() => {}); },
+    back: () => {
+      if (page !== 'home') { go('home'); return true; }
+      return false;
+    },
+    refresh: () => {
+      if (page === 'voice') renderVoiceSection().catch(() => {});
+    },
   };
 }

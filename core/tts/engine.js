@@ -129,6 +129,7 @@ export function createEngine(overrides = {}) {
 
     // 请求
     endpoint: '',                       // 可以是完整地址，也可以带 {{base}}
+    proxy: '',                          // 中转/反代地址，填了就用它替换域名
     method: 'POST',
     headers: {},                        // 值里可用 {{key}} / {{base}}
     body: {},                           // 一般放 text / voice / model
@@ -142,6 +143,7 @@ export function createEngine(overrides = {}) {
     responsePath: '',                   // json 时取哪个字段
 
     // 体验
+    speed: 1,                           // 语速倍率（引擎级，优先于全局）
     voiceHint: [],                      // 给下拉框用的候选音色（可空）
     note: '',                           // 给自己看的备注
 

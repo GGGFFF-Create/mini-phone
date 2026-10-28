@@ -23,6 +23,7 @@ export function createProfile(overrides = {}) {
 
     // 基础
     base: '',                  // 接口根地址，比如 https://api.openai.com/v1
+    proxy: '',                 // 中转/反代地址，填了就用它替换域名
     key: '',
     model: '',
     temperature: 0.8,
@@ -140,7 +141,20 @@ export function createClient(config = {}) {
 
   const base = String(profile.base ?? '').replace(/\/+$/, '');
   const vars = { base, key, model };
-  const endpoint = fillStr(profile.endpoint, vars).replace(/([^:]\/)\/+/g, '$1');
+  let endpoint = fillStr(profile.endpoint, vars).replace(/([^:]\/)\/+/g, '$1');
+
+  /*
+   * 中转（反代）：只换域名，路径和查询保留。
+   * 和语音那边同一套规则，两边的用户习惯一致。
+   */
+  if (profile.proxy) {
+    try {
+      const mid = new URL(String(profile.proxy).trim(), location?.href ?? 'http://localhost/');
+      const target = new URL(endpoint, location?.href ?? 'http://localhost/');
+      const prefix = mid.pathname.replace(/\/+$/, '');
+      endpoint = `${mid.origin}${prefix}${target.pathname}${target.search}`;
+    } catch { /* 地址不合法就用原地址 */ }
+  }
 
   async function once(messages, { stream = profile.stream, signal, onDelta, extra = {} } = {}) {
     if (!endpoint) throw new Error('还没有配置接口地址');
