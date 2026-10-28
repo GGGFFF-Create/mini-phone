@@ -494,6 +494,53 @@ export async function mount(root, ctx) {
     });
     view.append(vOn.wrap);
 
+    /* 语速：引擎上也能单独配，引擎配置优先 */
+    const speedField = el('div', 'field');
+    const speedHead = el('div', 'field-head');
+    speedHead.append(el('span', 'field-label', '语速'));
+    const speedValue = el('span', 'field-value', `${Math.round((voiceData.speed ?? 1) * 100)}%`);
+    speedHead.append(speedValue);
+    speedField.append(speedHead);
+
+    const speedRow = el('div', 'speed-row');
+    const speedRange = el('input');
+    speedRange.type = 'range';
+    speedRange.min = '0.5';
+    speedRange.max = '2';
+    speedRange.step = '0.05';
+    speedRange.value = String(voiceData.speed ?? 1);
+    speedRange.addEventListener('input', () => {
+      speedValue.textContent = `${Math.round(Number(speedRange.value) * 100)}%`;
+    });
+    speedRange.addEventListener('change', async () => {
+      try {
+        voiceData = { ...voiceData, ...(await api.voiceSave({ speed: Number(speedRange.value) })) };
+        toast(`语速 ${Math.round(Number(speedRange.value) * 100)}%`);
+      } catch (e) { toast(e?.message ?? '失败'); }
+    });
+    speedRow.append(speedRange);
+    speedField.append(speedRow);
+    view.append(speedField);
+
+    /* 试听用的句子 */
+    const previewField = el('div', 'field');
+    const previewHead = el('div', 'field-head');
+    previewHead.append(el('span', 'field-label', '试听句子'));
+    previewField.append(previewHead);
+    const previewInput = el('input', 'field-input');
+    previewInput.type = 'text';
+    previewInput.placeholder = '留空 = 用默认的「你好，我是某某。能听见我说话吗？」';
+    previewInput.value = voiceData.previewText ?? '';
+    previewInput.addEventListener('change', async () => {
+      try {
+        voiceData = { ...voiceData, ...(await api.voiceSave({ previewText: previewInput.value })) };
+      } catch (e) { toast(e?.message ?? '失败'); }
+    });
+    previewField.append(previewInput);
+    view.append(previewField);
+    view.append(el('p', 'settings-note',
+      '试听会真的合成一次（会花钱）。台词里配了音色的人，在下面每个人的「试听」按钮上就能听。'));
+
     /* 引擎选择 + 新建 */
     const engineSelect = el('select', 'field-input');
     for (const e of voiceData.engines) {
@@ -744,6 +791,8 @@ export async function mount(root, ctx) {
         if (person.source) head.append(el('span', `voice-src src-${person.source}`, SOURCE_LABEL[person.source] ?? ''));
         row.append(head);
 
+        const line = el('div', 'voice-bind-row');
+
         const input = el('input', 'field-input');
         input.type = 'text';
         input.placeholder = '音色 id（留空 = 用上面的默认音色）';
@@ -757,7 +806,29 @@ export async function mount(root, ctx) {
             toast(`${name} 的音色已保存`);
           } catch (e) { toast(e?.message ?? '失败'); }
         });
-        row.append(input);
+        line.append(input);
+
+        /* 试听：用这个人的音色念一句。配完能马上听，不用回正文试 */
+        const preview = el('button', 'pill-btn voice-preview', '试听');
+        preview.type = 'button';
+        preview.addEventListener('click', async () => {
+          if (preview.disabled) return;
+          const before = preview.textContent;
+          preview.disabled = true;
+          preview.textContent = '…';
+          try {
+            await api.voicePreview(name);
+            preview.textContent = '已播';
+          } catch (e) {
+            toast(e?.message ?? '试听失败');
+            preview.textContent = '失败';
+          } finally {
+            setTimeout(() => { preview.disabled = false; preview.textContent = before; }, 1500);
+          }
+        });
+        line.append(preview);
+
+        row.append(line);
         voiceList.append(row);
       }
       voiceSection.append(voiceList);

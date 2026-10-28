@@ -14,6 +14,11 @@ import { applyEmotion, fill, fillDeep, pick } from './engine.js';
 export function buildRequest(engine, line = {}, { language = '' } = {}) {
   const { text, used } = applyEmotion(line.text ?? '', line.emotion ?? '', engine);
 
+  // 语速：引擎上配一个倍率，模板里能用 {{speed}}。
+  // 浏览器朗读引擎直接拿它当 utterance.rate。
+  const rawSpeed = line.speed ?? engine.speed ?? 1;
+  const speed = Math.min(2, Math.max(0.5, Number(rawSpeed) || 1));
+
   const vars = {
     base: String(engine.base ?? '').replace(/\/+$/, ''),
     key: engine.key ?? '',
@@ -23,6 +28,8 @@ export function buildRequest(engine, line = {}, { language = '' } = {}) {
     rawText: String(line.text ?? ''),
     emotion: used,
     language: line.language || language || '',
+    speed,
+    speedPercent: Math.round(speed * 100),
   };
 
   const url = fill(engine.endpoint ?? '', vars);
@@ -41,7 +48,7 @@ export function buildRequest(engine, line = {}, { language = '' } = {}) {
     init.body = JSON.stringify(body);
   }
 
-  return { url, init, vars, emotionUsed: used };
+  return { url, init, vars, emotionUsed: used, speed };
 }
 
 /**
@@ -125,7 +132,8 @@ export function speakWithBrowser(text, { voice = '', rate = 1, lang = '' } = {},
   const synth = globalThis.speechSynthesis;
   if (!synth) throw new Error('这个浏览器不支持朗读');
 
-  const utter = new SpeechSynthesisUtterance(String(text ?? ''));
+  const raw = String(text ?? '');
+  const utter = new SpeechSynthesisUtterance(raw);
   utter.rate = Math.max(0.5, Math.min(2, Number(rate) || 1));
   if (lang) utter.lang = lang;
 
@@ -134,11 +142,45 @@ export function speakWithBrowser(text, { voice = '', rate = 1, lang = '' } = {},
     ?? (lang ? voices.find(v => v.lang?.startsWith(lang)) : null);
   if (hit) utter.voice = hit;
 
-  utter.onend = () => onEnd?.();
-  utter.onerror = (e) => onError?.(new Error(e?.error ?? '朗读失败'));
+  /*
+   * 超时兜底。
+   *
+   * onend 不是必然触发的：没有音频设备（无头浏览器、Linux 容器）、
+   * 系统语音引擎缺失、浏览器把 speak 静默丢弃 —— 这几种情况下事件永远
+   * 不来，调用方的 Promise 就永久挂住，界面上表现为"点了没反应，也停不下"。
+   *
+   * 按字数估一个上限：3 秒起步 + 每字 0.18 秒，最多 2 分钟。
+   */
+  let settled = false;
+  const limit = Math.min(120_000, 3_000 + raw.length * 180);
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    try { synth.cancel(); } catch { /* 忽略 */ }
+    onEnd?.();          // 当正常结束处理，别让调用方一直等
+  }, limit);
 
-  synth.cancel();       // 先停掉上一句，避免叠着念
-  synth.speak(utter);
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+  };
+
+  utter.onend = () => { finish(); onEnd?.(); };
+  utter.onerror = (e) => {
+    finish();
+    onError?.(new Error(e?.error ?? '朗读失败'));
+  };
+
+  try {
+    synth.cancel();       // 先停掉上一句，避免叠着念
+    synth.speak(utter);
+  } catch (e) {
+    finish();
+    onError?.(e instanceof Error ? e : new Error('朗读启动失败'));
+    return utter;
+  }
+
   return utter;
 }
 

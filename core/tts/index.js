@@ -126,7 +126,7 @@ export function createTTS({ getSettings, emit = () => {}, indexedDB } = {}) {
         emit('line', { state: 'playing', line });
         return await new Promise((resolve, reject) => {
           try {
-            speakWithBrowser(line.translation || line.text, { voice, lang: language }, {
+            speakWithBrowser(line.translation || line.text, { voice, lang: language, rate: line.speed ?? eng.speed ?? 1 }, {
               onEnd: () => { emit('line', { state: 'done', line }); resolve(true); },
               onError: (e) => { emit('line', { state: 'error', line, error: e.message }); reject(e); },
             });
@@ -145,7 +145,7 @@ export function createTTS({ getSettings, emit = () => {}, indexedDB } = {}) {
         for (const line of lines) {
           await new Promise((resolve) => {
             try {
-              speakWithBrowser(line.translation || line.text, { voice, lang: language }, { onEnd: resolve, onError: resolve });
+              speakWithBrowser(line.translation || line.text, { voice, lang: language, rate: line.speed ?? eng.speed ?? 1 }, { onEnd: resolve, onError: resolve });
             } catch { resolve(); }
           });
         }

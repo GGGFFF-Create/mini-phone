@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.9.0';
+const VERSION = '0.10.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -72,9 +72,12 @@ const DEFAULTS = {
     engines: {},              // 用户改过的引擎配置（没改过的用内置默认）
     voices: {},               // 角色名 → { engine, voice, language }
     language: '',
+    speed: 1,                 // 全局语速倍率（引擎上也能单独配，引擎的优先）
+    previewText: '',          // 试听用的句子，空 = 用默认的
     cacheLimitMB: 200,
     prefetch: true,           // 播这句时把下一句做好
     autoPrepare: false,       // 回复完把整段先做好（烧钱，默认关）
+    autoNarrate: false,       // 旁白（非台词部分）也念
   },
 
   // 联系人 = 当前卡的成员 + 手动加的 + 剧情里说过话的
@@ -105,6 +108,9 @@ let client = null;
 let panel = null;
 let iframe = null;
 let bridge = null;
+
+/** 老版酒馆（1.18 及以前）被包装前的原 messageFormatting，disable 时要还原 */
+let legacyFormatting = null;
 
 const listeners = [];     // [source, event, fn]
 let floorCount = 0;       // 已经看了几楼
@@ -521,7 +527,7 @@ function bindRender() {
         // 先打隐形标记再交给酒馆渲染 —— 私用区字符不会被 markdown 转义
         const marked = markLines(text, settings.protocol ?? DEFAULT_PROTOCOL, { token });
         const html = original.call(this, marked, name, isSystem, isUser, messageId, ...rest);
-        return buttonsFromMarks(html, { token });
+        return withSayAll(buttonsFromMarks(html, { token }));
       } catch (e) {
         console.warn('[mini-phone] 渲染降级：', e?.message);
         return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
@@ -537,8 +543,55 @@ function bindRender() {
   document.addEventListener('click', onClickWave, true);
 }
 
-/** 老版酒馆被包装前的原函数，disable 时要还原 */
-let legacyFormatting = null;
+/**
+ * 在渲染结果末尾追加「念整段」按钮。
+ *
+ * 单句声波是"点哪儿念哪儿"，这个是一次把整楼台词念完 —— 想听一整段
+ * 对话的走向时不用一句句点。
+ */
+function withSayAll(html) {
+  if (!active || !settings?.voice?.enabled) return html;
+  if (typeof html !== 'string' || !html.includes('mp-line')) return html;
+  return `${html}<button type="button" class="mp-sayall" data-say-all data-state="idle">▷ 念整段</button>`;
+}
+
+/** 从 DOM 里把这一楼的台词全捞出来，按顺序念 */
+async function sayAllFrom(btn) {
+  const host = btn.closest('.mes_text') ?? btn.parentElement;
+  if (!host) return;
+
+  const lines = [...host.querySelectorAll('.mp-line')]
+    .sort((a, b) => Number(a.dataset.i ?? 0) - Number(b.dataset.i ?? 0))
+    .map((n) => ({
+      role: n.dataset.role || '',
+      emotion: n.dataset.emotion || '',
+      text: n.dataset.text || '',
+      // .mp-tr 里是带弯引号的显示文本，剥掉引号
+      translation: (n.querySelector('.mp-tr')?.textContent ?? '').replace(/^[“"']+|[”"']+$/g, '').trim(),
+    }))
+    .filter(l => l.role && (l.text || l.translation));
+
+  if (!lines.length) {
+    btn.dataset.state = 'error';
+    btn.title = '这一楼没有可念的台词';
+    return;
+  }
+
+  btn.dataset.state = 'loading';
+  btn.textContent = '准备中…';
+  try {
+    if (tts?.busy) tts.stop();
+    await tts.speakAll(lines);
+    btn.dataset.state = 'done';
+  } catch (e) {
+    btn.dataset.state = 'error';
+    btn.title = String(e?.message ?? e);
+    console.warn('[mini-phone] 念整段失败：', e?.message);
+  } finally {
+    btn.textContent = '▷ 念整段';
+    setTimeout(() => { if (btn.dataset.state === 'done') btn.dataset.state = 'idle'; }, 1200);
+  }
+}
 
 function bindRenderStages(fm) {
   const st = fm.stage ?? {};
@@ -559,7 +612,7 @@ function bindRenderStages(fm) {
       if (!active || !settings?.voice?.enabled) return unmark(text);
       if (!meta || meta.isUser || meta.isSystem || meta.isReasoning) return text;
       try {
-        return buttonsFromMarks(text, { token: renderTokens.get(meta.messageId) ?? '' });
+        return withSayAll(buttonsFromMarks(text, { token: renderTokens.get(meta.messageId) ?? '' }));
       } catch { return unmark(text); }
     }, { stage: st.AFTER_MARKDOWN });
 
@@ -582,6 +635,21 @@ function bindRenderStages(fm) {
 
 /** 点击正文里的声波 */
 async function onClickWave(event) {
+  /* 「念整段」：一次把这一楼所有台词念完 */
+  const allBtn = event.target?.closest?.('[data-say-all]');
+  if (allBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    const anyReady = tts?.readyFor({ role: currentSpace().name, text: '', emotion: '' });
+    if (!anyReady?.ok) {
+      notify(anyReady?.why ?? '语音还没配好：设置 → 语音');
+      openPanel();
+      return;
+    }
+    sayAllFrom(allBtn);
+    return;
+  }
+
   const btn = event.target?.closest?.('.mp-play');
   if (!btn) return;
   if (event.detail > 1) return;          // 双击放过
@@ -1037,6 +1105,9 @@ function publicVoice() {
     cacheLimitMB: v.cacheLimitMB ?? 200,
     prefetch: v.prefetch !== false,
     autoPrepare: !!v.autoPrepare,
+    speed: Number(v.speed) || 1,
+    previewText: v.previewText ?? '',
+    autoNarrate: !!v.autoNarrate,
     voices: v.voices ?? {},
   };
 }
@@ -1441,6 +1512,41 @@ function createBridge() {
     },
 
     voiceStop: (source) => { guard(source); tts?.stop(); return true; },
+
+    /**
+     * 试听：用这个角色的音色念一句。
+     * 引擎级的 voiceTest 只测"连得通吗"，这个是"听着像不像他"。
+     */
+    voicePreview: async (source, role) => {
+      guard(source);
+      const name = String(role ?? '').trim() || context()?.name2 || '旁白';
+      const text = String(settings.voice?.previewText ?? '').trim()
+        || `你好，我是${name}。能听见我说话吗？`;
+      tts?.stop();
+      await tts.speak({
+        role: name,
+        emotion: '',
+        text,
+        translation: text,
+        speed: settings.voice?.speed ?? 1,
+      });
+      return true;
+    },
+
+    /** 列出这个角色能用什么音色（给试听下拉用） */
+    voiceStatus: (source, role) => {
+      guard(source);
+      const name = String(role ?? '').trim();
+      const line = { role: name, text: '', emotion: '' };
+      const ready = tts.readyFor(line);
+      const bound = settings.voice?.voices?.[name] ?? null;
+      return {
+        ready: ready.ok,
+        why: ready.why ?? '',
+        bound: bound ? { engine: bound.engine ?? '', voice: bound.voice ?? '' } : null,
+        activeEngine: settings.voice?.activeEngine ?? '',
+      };
+    },
     voiceLevel: (source) => { guard(source); return tts?.level() ?? 0; },
     voiceStats: (source) => { guard(source); return tts.stats(); },
     voiceClearCache: (source) => { guard(source); return tts.clearCache(); },

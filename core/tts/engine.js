@@ -27,6 +27,8 @@ export const TEMPLATE_VARS = Object.freeze({
   rawText: '原始文本，不带情绪前缀',
   emotion: '情绪词（英文，未处理时是空）',
   language: '语言代码，如 zh / en / ja',
+  speed: '语速倍率，1 = 正常（0.5 慢一半，2 快一倍）',
+  speedPercent: '语速的百分比整数，如 100（有些接口要这种格式）',
 });
 
 /** 响应类型 */

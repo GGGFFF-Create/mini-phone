@@ -158,6 +158,15 @@ export function createAudioCache({ limitBytes = 200 * 1024 * 1024, indexedDB } =
   }
 
   return {
+    /**
+     * 算一次合成的身份证号。
+     *
+     * 必须挂在返回对象上 —— player 里是 cache.fingerprint(...) 调的。
+     * 之前漏了这个，player 拿到的 key 一直是 undefined，判定成"没有 key
+     * 就不查缓存"，于是每点一次都要重新合成、重复花钱。
+     */
+    fingerprint,
+
     async get(key) {
       if (hot.has(key)) return hot.get(key);
 

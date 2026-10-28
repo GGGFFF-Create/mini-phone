@@ -63,7 +63,23 @@ export function createPlayer({ cache, synthesize, resolveVoice, emit = () => {} 
       const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
       if (!AC) throw new Error('这个浏览器没有网页音频功能');
       ctx = ctx ?? new AC();
-      if (ctx.state === 'suspended') await ctx.resume();
+
+      /*
+       * resume() 的 Promise 不是必然 resolve 的。
+       *
+       * 浏览器在没有用户手势时不放行音频（Chrome 的状态是 suspended，
+       * 触发播放会报 not-allowed），这时 resume() 一直挂着不回来 ——
+       * 调用方 await 在这里就永久卡死，界面上显示"点了没反应"。
+       * 所以给它一个上限：600ms 拿不到 running 就接着走，
+       * 让下层自己去撞 not-allowed 并报错，好过无声地卡住。
+       */
+      if (ctx.state === 'suspended') {
+        await Promise.race([
+          ctx.resume().catch(() => {}),
+          new Promise((r) => setTimeout(r, 600)),
+        ]);
+      }
+
       meter = meter ?? createMeter(ctx);
       unlocked = ctx.state === 'running';
       // 播一个极短的静音，让 iOS 认定"音频由用户手势启动"

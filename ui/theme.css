@@ -1350,6 +1350,59 @@ html, body {
 .voice-bind-list { background: var(--surface); }
 .voice-bind-list .field { background: none; }
 
+.voice-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.voice-bind-row .field-input { flex: 1 1 auto; min-width: 0; }
+.voice-preview {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.voice-preview:disabled { opacity: .7; }
+
+/* 语速滑条 */
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 16px 10px;
+}
+.speed-row input[type='range'] { flex: 1 1 auto; accent-color: var(--accent); }
+.speed-value {
+  flex: 0 0 auto;
+  min-width: 42px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+/* 正文里的「念整段」按钮 */
+.mp-sayall {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 6px 0 0 2px;
+  padding: 4px 11px;
+  border: 1px solid rgba(128, 140, 165, .32);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: .86em;
+  cursor: pointer;
+  opacity: .62;
+  transition: opacity .15s ease, background-color .15s ease;
+}
+.mp-sayall:hover { opacity: 1; background: rgba(128, 140, 165, .12); }
+.mp-sayall[data-state='playing'] { opacity: 1; border-color: rgba(79, 140, 255, .55); color: #4f8cff; }
+.mp-sayall[data-state='loading'] { opacity: .85; }
+.mp-sayall[data-state='error'] { opacity: 1; color: #e05a5a; border-color: rgba(224, 90, 90, .4); }
+
 /* ------------------------------------------------------- toast */
 
 .toast {
