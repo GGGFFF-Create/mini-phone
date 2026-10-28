@@ -20,6 +20,23 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+/** 头像：有图用图，没图用首字。图挂了也退回首字，不让它显示裂图。 */
+function avatarEl(name, src, size = '') {
+  const box = el('span', `avatar ${size}`.trim());
+  const label = String(name ?? '?');
+  if (src) {
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = label;
+    img.decoding = 'async';
+    img.addEventListener('error', () => { img.remove(); box.textContent = label.slice(0, 1); });
+    box.append(img);
+  } else {
+    box.textContent = label.slice(0, 1);
+  }
+  return box;
+}
+
 const timeOf = (ts) => {
   if (!ts) return '';
   const d = new Date(ts);
@@ -194,7 +211,7 @@ export async function mount(root, ctx) {
     for (const t of threads) {
       const row = el('button', 'row');
       row.type = 'button';
-      row.append(el('span', 'avatar', (t.name || '?').slice(0, 1)));
+      row.append(avatarEl(t.name, t.avatar));
 
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', t.name));
@@ -234,7 +251,7 @@ export async function mount(root, ctx) {
     for (const person of list) {
       const row = el('button', 'row');
       row.type = 'button';
-      row.append(el('span', 'avatar', person.name.slice(0, 1)));
+      row.append(avatarEl(person.name, person.avatar));
 
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', person.name));

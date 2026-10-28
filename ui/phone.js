@@ -114,6 +114,54 @@ function leaveApp() {
   emit('appClosed');
 }
 
+/* ------------------------------------------------------------ 图片 */
+
+/**
+ * 把用户选的图缩成正方形头像，返回 data URL。
+ * 为什么在前端压：原图动辄几 MB，base64 之后更大，塞进 settings
+ * 会把酒馆的 settings.json 撑爆。160×160 JPEG 只有 8KB 左右。
+ */
+async function compressImage(file, size = 160, quality = 0.82) {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const g = canvas.getContext('2d');
+
+  // 居中裁成正方形再缩，避免头像变形
+  const side = Math.min(bitmap.width, bitmap.height);
+  const sx = (bitmap.width - side) / 2;
+  const sy = (bitmap.height - side) / 2;
+  g.drawImage(bitmap, sx, sy, side, side, 0, 0, size, size);
+  bitmap.close?.();
+
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+/** 弹文件选择框，返回压缩后的 data URL（用户取消返回 null） */
+function pickImage(size = 160) {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+
+    input.addEventListener('change', async () => {
+      const file = input.files?.[0];
+      if (!file) { finish(null); return; }
+      try { finish(await compressImage(file, size)); }
+      catch (e) { console.warn('[phone] 图片处理失败：', e?.message); finish(null); }
+    });
+
+    // 用户直接关掉选择框时，change 不会触发。用窗口焦点回来兜底。
+    window.addEventListener('focus', () => setTimeout(() => finish(null), 800), { once: true });
+
+    input.click();
+  });
+}
+
 /* ------------------------------------------------------------ 上下文 */
 
 function makeContext(app, params) {
@@ -139,6 +187,9 @@ function makeContext(app, params) {
     refreshBadges,
 
     toast,
+
+    /** 选一张图并缩成头像，返回 data URL（取消返回 null） */
+    pickImage,
 
     /** 通知宿主（宿主会重新取数据或做别的） */
     notify: emit,

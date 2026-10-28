@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -81,6 +81,13 @@ const DEFAULTS = {
   contacts: [],
   /** 在剧情里说过话的人，按卡记录：{ name, cards: ['card:xxx'], at } */
   seenRoles: [],
+  /**
+   * 自定义头像。{ 名字: { dataUrl, at } }
+   * 存压缩后的 data URL（160×160 JPEG 大约 8KB）——
+   * 不用 IndexedDB 是为了"换个浏览器也能带着走"，
+   * 因为 settings 会跟着酒馆的 settings.json 同步。
+   */
+  avatars: {},
 
   ui: { theme: 'dark', lastThread: '', closedAt: 0 },
 };
@@ -892,20 +899,77 @@ function spaceInfo() {
     type: space.type,
     key: space.key,
     user: ctx?.name1 || '我',
-    contacts: (roster?.list ?? []).map(c => ({ name: c.name, avatar: avatarUrl(c) })),
+    contacts: (roster?.list ?? []).map(c => ({ name: c.name, avatar: avatarUrl(c.name) })),
     hasModel: !!client?.config?.url,
     hasVoice: !!settings.voice?.enabled,
     settings: publicSettings(),
   };
 }
 
-function avatarUrl(c) {
+/**
+ * 头像 URL。
+ *
+ * 三级优先：
+ *   ① 用户自定义的（settings.avatars[name].dataUrl）
+ *   ② 主角（name1）→ 从 powerUserSettings.personas 里按名字反查文件名
+ *   ③ 角色卡 → getThumbnailUrl('avatar', file)
+ *
+ * 注意 persona 那一步：ST 1.18 的 powerUserSettings.persona 是 undefined，
+ * 真正的头像文件名是 personas 这个表里的 key，得按 name 反查。
+ */
+function avatarUrl(name) {
+  const n = String(name ?? '').trim();
+  if (!n) return '';
+
+  const custom = settings?.avatars?.[n]?.dataUrl;
+  if (custom) return custom;
+
   const ctx = context();
-  const ch = ctx?.characters?.find(x => x.name === c.name);
-  if (!ch?.avatar || ch.avatar === 'none') return '';
-  try { return ctx?.getThumbnailUrl?.('avatar', ch.avatar) ?? `/thumbnail?type=avatar&file=${encodeURIComponent(ch.avatar)}`; }
-  catch { return ''; }
+
+  // 主角
+  if (n === ctx?.name1) {
+    // ST 1.18 里 powerUserSettings.personas 是 { 文件名: 名字 } 的映射
+    // （值可能是字符串，也可能是对象 —— 两种都认，别写死）
+    const personas = ctx?.powerUserSettings?.personas ?? {};
+    const file = Object.keys(personas).find((f) => {
+      const v = personas[f];
+      return typeof v === 'string' ? v === n : v?.name === n;
+    });
+    if (file) {
+      try {
+        return ctx?.getThumbnailUrl?.('persona', file)
+          ?? `/thumbnail?type=persona&file=${encodeURIComponent(file)}`;
+      } catch { /* 往下走 */ }
+    }
+    return '';
+  }
+
+  // 角色卡
+  const ch = ctx?.characters?.find(c => c?.name === n);
+  if (ch?.avatar && ch.avatar !== 'none') {
+    try {
+      return ctx?.getThumbnailUrl?.('avatar', ch.avatar)
+        ?? `/thumbnail?type=avatar&file=${encodeURIComponent(ch.avatar)}`;
+    } catch { return ''; }
+  }
+  return '';
 }
+
+/** 主角信息：名字、头像、描述 */
+function personaInfo() {
+  const ctx = context();
+  const name = ctx?.name1 || '我';
+  const pu = ctx?.powerUserSettings ?? {};
+  return {
+    name,
+    avatar: avatarUrl(name),
+    description: String(pu.persona_description ?? '').trim(),
+    isCustomAvatar: !!settings?.avatars?.[name]?.dataUrl,
+  };
+}
+
+/** 这个人的头像是自定义的还是酒馆默认的 */
+const isCustomAvatar = (name) => !!settings?.avatars?.[String(name ?? '').trim()]?.dataUrl;
 
 function publicSettings() {
   return {
@@ -1003,6 +1067,45 @@ function createBridge() {
       return true;
     },
 
+    /* --- 头像 --- */
+    /** 主角（user persona）的名字、头像、描述 */
+    persona: (source) => { guard(source); return personaInfo(); },
+
+    /**
+     * 换头像。dataUrl 是压缩过的（前端用 canvas 缩到 160×160 再传）。
+     * 不收原始大图：base64 进 settings 会让酒馆的 settings.json 膨胀。
+     */
+    avatarSet: (source, name, dataUrl) => {
+      guard(source);
+      const n = String(name ?? '').trim();
+      if (!n) throw new Error('缺名字');
+      if (typeof dataUrl !== 'string' || !/^data:image\//i.test(dataUrl)) throw new Error('头像数据无效');
+      if (dataUrl.length > 200 * 1024) throw new Error('头像太大了（超过 200KB），换一张小一点的');
+
+      settings.avatars = { ...(settings.avatars ?? {}), [n]: { dataUrl, at: Date.now() } };
+      saveSettings();
+      bridge?.post('space', spaceInfo());
+      return { name: n, avatar: avatarUrl(n), isCustom: true };
+    },
+
+    /** 恢复成酒馆里的默认封面 */
+    avatarClear: (source, name) => {
+      guard(source);
+      const n = String(name ?? '').trim();
+      const next = { ...(settings.avatars ?? {}) };
+      delete next[n];
+      settings.avatars = next;
+      saveSettings();
+      bridge?.post('space', spaceInfo());
+      return { name: n, avatar: avatarUrl(n), isCustom: false };
+    },
+
+    /** 哪些人用着自定义头像（设置页显示"恢复默认"用） */
+    avatarCustom: (source) => {
+      guard(source);
+      return Object.keys(settings.avatars ?? {});
+    },
+
     /* --- 聊天 --- */
     /** 当前这张卡里可以聊天的人（消息 App 的「联系人」页用它） */
     contacts: (source) => {
@@ -1015,13 +1118,20 @@ function createBridge() {
         list: (roster?.list ?? []).map(c => ({
           name: c.name,
           source: c.source ?? '',
-          avatar: avatarUrl(c),
+          avatar: avatarUrl(c.name),
           hasVoice: !!settings.voice?.voices?.[c.name]?.voice,
         })),
       };
     },
 
-    threads: (source) => { guard(source); return chatSvc.listThreads(); },
+    /** 会话列表，每条带上对方头像 */
+    threads: (source) => {
+      guard(source);
+      return chatSvc.listThreads().then(list => list.map(t => ({
+        ...t,
+        avatar: avatarUrl(t.partner || t.name),
+      })));
+    },
     thread: (source, id) => { guard(source); return store.threads.get(id); },
     markRead: (source, id) => { guard(source); return store.threads.markRead(id); },
     unread: (source) => { guard(source); return chatSvc.unreadCount(); },
@@ -1182,7 +1292,7 @@ function createBridge() {
         contacts: (roster?.list ?? []).map(c => ({
           name: c.name,
           source: c.source ?? '',
-          avatar: avatarUrl(c),
+          avatar: avatarUrl(c.name),
         })),
         spaceName: space.name,
         spaceType: space.type,

@@ -31,6 +31,13 @@ export const APPS = [
     load: load('./apps/moments/index.js'),
   },
   {
+    id: 'me',
+    name: '我',
+    icon: '🙂',
+    accent: '#7ddca6',
+    load: load('./apps/me/index.js'),
+  },
+  {
     id: 'settings',
     name: '设置',
     icon: '⚙️',
@@ -40,6 +47,6 @@ export const APPS = [
 ];
 
 /** 桌面第一页摆哪几个（顺序即位置） */
-export const HOME = ['chat', 'moments', 'settings'];
+export const HOME = ['chat', 'moments', 'me', 'settings'];
 
 export const findApp = (id) => APPS.find(a => a.id === id) ?? null;
