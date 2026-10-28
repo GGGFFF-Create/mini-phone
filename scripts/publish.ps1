@@ -121,14 +121,27 @@ try {
 
     # ---------------------------------------------------------- 方式三：Token
     if (-not $Token) {
-        Write-Host '需要认证才能推送。三种方式：' -ForegroundColor Yellow
-        Write-Host '  .\scripts\publish.ps1 -Token ghp_xxx     # PAT（推荐）'
-        Write-Host '  .\scripts\publish.ps1 -Gh                # gh CLI'
-        Write-Host '  .\scripts\publish.ps1 -Ssh               # SSH key'
         Write-Host ''
-        Write-Host 'PAT 生成地址：https://github.com/settings/tokens' -ForegroundColor Cyan
-        Write-Host '  勾选 repo 权限，有效期建议 30 天'
-        throw '需要 -Token'
+        Write-Host '需要 GitHub 认证才能推送（这是唯一需要你亲自做的一步）。' -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host '三步：' -ForegroundColor Cyan
+        Write-Host '  1. 打开 https://github.com/settings/tokens'
+        Write-Host '  2. Generate new token (classic) → 勾上 repo → 拉到底点 Generate'
+        Write-Host '  3. 把生成的那串（ghp_ 开头）粘到下面'
+        Write-Host ''
+        Write-Host '粘进来的 token 只在这次推送里用，不会存到任何文件。' -ForegroundColor DarkGray
+        Write-Host ''
+
+        # -AsSecureString 让输入不回显
+        $secure = Read-Host 'Token' -AsSecureString
+        if (-not $secure -or $secure.Length -eq 0) { throw '没有输入 token' }
+
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try { $Token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+
+        $Token = "$Token".Trim()
+        if (-not $Token) { throw 'token 是空的' }
     }
 
     $headers = @{
