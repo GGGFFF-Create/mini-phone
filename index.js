@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -250,10 +250,50 @@ function tagFromStory(id) {
     const lines = parseLines(m.mes, settings.protocol ?? DEFAULT_PROTOCOL);
     if (!lines.length) return;
     if (tagRoles(lines.map(l => l.role))) {
-      roster = buildRoster();     // 名册变了，重建
+      refreshRoster();
       bridge?.post('space', spaceInfo());
     }
   } catch { /* 不打断正文 */ }
+}
+
+/**
+ * 扫一段历史消息，把里面说过话的人全部登记到当前卡。
+ *
+ * 【为什么需要这个】
+ * 只靠"新消息渲染时登记"是不够的：用户打开一张**已经有几十楼**的卡时，
+ * 那些楼早就渲染过了，不会再触发一次。结果就是设置页空着 —— 明明在聊天，
+ * 却一个人都不列。
+ *
+ * ST-iPhonie 的做法是换卡时 tagSpeakers(chat.slice(-200))，扫最近 200 条。
+ * 这里照做。
+ */
+function scanSpeakers(messages) {
+  const ctx = context();
+  const me = ctx?.name1 || '';
+  const names = new Set();
+  const proto = settings.protocol ?? DEFAULT_PROTOCOL;
+
+  for (const m of messages ?? []) {
+    if (!m || m.is_user || m.is_system) continue;
+    if (typeof m.mes === 'string') {
+      for (const line of parseLines(m.mes, proto)) {
+        if (line.role && line.role !== me) names.add(line.role);
+      }
+    }
+    // 消息本身的说话人（群聊里每条都带；单卡就是角色名）
+    const who = String(m.name ?? '').trim();
+    if (who && who !== me && !/^sillytavern\s+system$/i.test(who) && !/^system$/i.test(who)) {
+      names.add(who);
+    }
+  }
+
+  return names.size ? tagRoles([...names]) : false;
+}
+
+/** 重算名册并同步给界面 */
+function refreshRoster() {
+  roster = buildRoster();
+  return roster;
 }
 
 const currentCard = () => {
@@ -609,16 +649,20 @@ function bindEvents() {
     } catch { /* 忽略 */ }
   });
 
-  // 换聊天/换卡：清注入、重建名册
+  // 换聊天/换卡：清注入、重建名册、扫历史登记说话的人
   add(t.CHAT_CHANGED, () => {
     try {
       clearInject();
-      roster = buildRoster();
       pendingPhone = null;
       quietCount = 0;
       floorCount = 0;
-      // 换卡后把新卡的成员登记一下，这样设置页能立刻看到
+
+      // ① 当前卡的成员先登记（群聊成员、单卡角色名）
       tagRoles(currentSpace().members);
+      // ② 再扫历史：打开一张早就在聊的卡时，那些楼不会再触发渲染事件
+      scanSpeakers((context()?.chat ?? []).slice(-200));
+      // ③ 重算并推给界面
+      refreshRoster();
       bridge?.post('space', spaceInfo());
     } catch { /* 忽略 */ }
   });
@@ -838,6 +882,7 @@ function closePanel() {
 function spaceInfo() {
   const ctx = context();
   const space = currentSpace();
+  refreshRoster();               // 实时：别把 enable 时的旧名册推给界面
   return {
     name: space.name,
     type: space.type,
@@ -1105,6 +1150,8 @@ function createBridge() {
     /* --- 语音 --- */
     voiceGet: (source) => {
       guard(source);
+      // 实时重算：用户可能刚打开一张卡，缓存的 roster 是 enable 时的旧数据
+      refreshRoster();
       const space = currentSpace();
       return {
         ...publicVoice(),
@@ -1342,6 +1389,14 @@ export async function enable() {
   inject();
 
   active = true;
+
+  // 刷新页面后不换卡也要有数据：扫一遍现有历史，把说过话的人登记上
+  try {
+    tagRoles(currentSpace().members);
+    scanSpeakers((context()?.chat ?? []).slice(-200));
+    refreshRoster();
+  } catch (e) { console.warn('[mini-phone] 初始扫历史失败：', e?.message); }
+
   console.info('[mini-phone] enabled');
 }
 
