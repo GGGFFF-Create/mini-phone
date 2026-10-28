@@ -50,7 +50,7 @@ export async function mount(root, ctx) {
       empty.append(el('div', 'chat-empty-icon', '🖼️'));
       empty.append(el('b', '', '还没有动态'));
       empty.append(el('p', '',
-        '点上面的 ＋ 让角色发一条。正文里写 [朋友圈] 也会出现在这里。'));
+        '点击右上角的 ＋ 让角色发布一条；也可在正文中写 [朋友圈]，内容会同步到这里。每次生成消耗一次接口调用。'));
       list.append(empty);
       return;
     }
@@ -68,24 +68,24 @@ export async function mount(root, ctx) {
 
     const refresh = el('button', 'moments-hero-btn', '⟳');
     refresh.type = 'button';
-    refresh.title = '刷新';
+    refresh.title = '刷新动态';
     refresh.addEventListener('click', () => { reload().then(() => toast('已刷新')); });
     acts.append(refresh);
 
     const compose = el('button', 'moments-hero-btn', composing ? '…' : '＋');
     compose.type = 'button';
-    compose.title = '让角色发一条';
+    compose.title = '让角色发布动态';
     compose.disabled = composing;
     compose.addEventListener('click', doCompose);
     acts.append(compose);
 
     const sort = el('button', 'moments-hero-btn', '⇅');
     sort.type = 'button';
-    sort.title = '按时间排序（最新的在上面）';
+    sort.title = '按时间排序';
     sort.addEventListener('click', () => {
       moments = [...moments].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
       render();
-      toast('已按时间重排');
+      toast('已按时间排序');
     });
     acts.append(sort);
 

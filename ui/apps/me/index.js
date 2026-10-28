@@ -33,7 +33,7 @@ export async function mount(root, ctx) {
     /* 头像 */
     const avatarBox = el('button', 'me-avatar');
     avatarBox.type = 'button';
-    avatarBox.title = '点击换头像';
+    avatarBox.title = '更换头像';
 
     if (me?.avatar) {
       const img = document.createElement('img');
@@ -55,7 +55,7 @@ export async function mount(root, ctx) {
     const info = el('div', 'me-info');
     info.append(el('b', 'me-name', me?.name ?? '我'));
     if (me?.description) info.append(el('p', 'me-desc', me.description));
-    else info.append(el('p', 'me-desc me-desc-empty', '还没有设置人设描述（在酒馆的 Persona 里填）'));
+    else info.append(el('p', 'me-desc me-desc-empty', '未设置人设描述'));
     head.append(info);
 
     view.append(head);
@@ -76,7 +76,7 @@ export async function mount(root, ctx) {
     actions.append(change);
 
     if (me?.isCustomAvatar) {
-      const reset = el('button', 'pill-btn me-reset', '恢复酒馆里的默认封面');
+      const reset = el('button', 'pill-btn me-reset', '恢复为酒馆角色卡封面');
       reset.type = 'button';
       reset.addEventListener('click', resetAvatar);
       actions.append(reset);
@@ -86,8 +86,7 @@ export async function mount(root, ctx) {
 
     /* 说明 */
     view.append(el('p', 'settings-note',
-      '头像是本地的：只存在这台设备的酒馆设置里，不会上传。' +
-      '换上去的图会缩到 160×160，占几 KB。'));
+      '头像仅保存在本机酒馆设置中，不会上传；图片会压缩至 160×160 后存储。'));
   }
 
   function statCard(label, value, icon) {
@@ -107,7 +106,7 @@ export async function mount(root, ctx) {
       const r = await api.avatarSet(me?.name ?? '', dataUrl);
       me = { ...me, avatar: r.avatar, isCustomAvatar: true };
       render();
-      toast('头像换好了');
+      toast('头像已更新');
     } catch (e) {
       toast(e?.message ?? '换头像失败');
     }
@@ -118,7 +117,7 @@ export async function mount(root, ctx) {
       const r = await api.avatarClear(me?.name ?? '');
       me = { ...me, avatar: r.avatar, isCustomAvatar: false };
       render();
-      toast('已恢复默认');
+      toast('已恢复为默认封面');
     } catch (e) {
       toast(e?.message ?? '恢复失败');
     }

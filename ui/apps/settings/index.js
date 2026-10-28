@@ -116,7 +116,7 @@ export async function mount(root, ctx) {
   cur = pages.chat;
   section('模型接口');
   cur.append(el('p', 'settings-note',
-    '手机聊天和朋友圈用这条通道。可存多套，随时切。'));
+    '手机聊天与朋友圈使用此通道，独立于酒馆正文模型计费。可保存多套配置随时切换。'));
 
   let llmData = null;
   try { llmData = await api.llmGet(); } catch { /* 忽略 */ }
@@ -189,7 +189,7 @@ export async function mount(root, ctx) {
       mk('接口地址', 'base', { placeholder: 'https://api.deepseek.com/v1', hint: '填到 /v1' });
       mk('中转地址', 'proxy', {
         placeholder: 'https://你的反代域名',
-        hint: '只换域名，路径保留。留空 = 直连',
+        hint: '填写后仅替换域名，路径与参数保留。留空则直连。',
       });
       mk('API Key', 'key', { type: 'password' });
       mk('模型名', 'model', { placeholder: 'deepseek-chat / gpt-4o-mini', hint: '聊天建议用便宜快的' });
@@ -230,7 +230,7 @@ export async function mount(root, ctx) {
         adv.append(jsonEditor('额外请求头（JSON）', p.headers, (v) => saveLlm({ headers: v }), 3));
         adv.append(jsonEditor('额外请求体（JSON）', p.body, (v) => saveLlm({ body: v }), 4));
         adv.append(el('p', 'settings-note',
-          '可加 top_p、stop 等标准字段，会合并进请求。'));
+          '可在此追加 top_p、stop 等标准参数，将合并进请求体。'));
 
         const st = toggle({ label: '要流式输出', checked: p.stream === true, hint: '有些中转不支持，报错就关掉' });
         st.input.addEventListener('change', () => saveLlm({ stream: st.input.checked }));
@@ -303,7 +303,7 @@ export async function mount(root, ctx) {
 
     if (!llmData.ready) {
       cur.append(el('p', 'settings-note',
-        '⚠️ 现在这套还没填完整，手机聊天会提示"还没配置模型"。'));
+        '⚠️ 此配置尚未填写完整，手机聊天将提示未配置模型。'));
     }
   }
 
@@ -312,7 +312,7 @@ export async function mount(root, ctx) {
   cur = pages.general;
   section('聊天模式');
   cur.append(el('p', 'settings-note',
-    '决定聊天知不知道正文。开销差别很大。'));
+    '决定聊天时角色能知道多少正文内容，三档开销差异明显。'));
 
   const MODES = [
     {
@@ -390,13 +390,13 @@ export async function mount(root, ctx) {
   cur.append(cards);
 
   cur.append(el('p', 'settings-note',
-    '立刻生效。已有记录不变。'));
+    '切换后立即生效，已有聊天记录不受影响。'));
 
   /* ------------------------------------------------------ 预算 */
 
   section('上下文预算');
   cur.append(el('p', 'settings-note',
-    '越大越准越贵。下次请求生效。'));
+    '数值越大越准确，同时开销越高。修改后下次请求生效。'));
 
   const b = settings.budget ?? {};
   const full = slider({
@@ -506,7 +506,7 @@ export async function mount(root, ctx) {
     cur.append(el('p', 'settings-note', '语音模块没加载起来，看看控制台有没有报错。'));
   } else {
     cur.append(el('p', 'settings-note',
-      '独立接口，和聊天分开配。'));
+      '语音使用独立接口，与聊天模型分开配置。正文出现台词时，点击声波按钮即可朗读。'));
 
     /* 总开关 */
     const vOn = toggle({ label: '开启动语音', checked: voiceData.enabled, hint: '关掉之后正文不显示声波按钮' });
@@ -561,7 +561,7 @@ export async function mount(root, ctx) {
     previewField.append(previewInput);
     cur.append(previewField);
     cur.append(el('p', 'settings-note',
-      '试听会真的合成，会计费。'));
+      '试听会真实发起一次合成请求，产生费用。'));
 
     /* 引擎选择 + 新建 */
     const engineSelect = el('select', 'field-input');
@@ -631,7 +631,7 @@ export async function mount(root, ctx) {
         /* 中转（反代）：填了就把域名换成它 */
         mk('中转地址', 'proxy', {
           placeholder: 'https://你的反代域名',
-          hint: '只换域名，路径保留。留空 = 直连',
+          hint: '填写后仅替换域名，路径与参数保留。留空则直连。',
         });
 
         mk('API Key', 'key', { type: 'password', placeholder: '留空则不修改' });
@@ -641,7 +641,7 @@ export async function mount(root, ctx) {
           label: '请求地址',
           value: eng.endpoint ?? '',
           placeholder: '{{base}}/audio/speech',
-          hint: '{{base}} {{voice}} {{text}} … 见下方变量表',
+          hint: '支持变量：{{base}} {{voice}} {{model}} {{text}} {{language}} {{speed}}',
         });
         ep.input.addEventListener('change', () => saveField('endpoint', ep.input.value));
         editor.append(ep.wrap);
@@ -804,10 +804,10 @@ export async function mount(root, ctx) {
       const list = voiceData?.contacts ?? [];
 
       voiceSection.append(el('p', 'settings-note', list.length
-        ? `只列「${voiceData.spaceName || '当前卡'}」里的人 —— 换角色卡会自动换一批，不是全酒馆的角色。`
+        ? `仅显示当前角色卡「${voiceData.spaceName || '当前卡'}」中的角色。切换角色卡后列表随之更新。`
         : voiceData?.hasSpace === false
-          ? '现在没有打开角色卡。先去酒馆里选一张卡，这里才会出现可以配音的人。'
-          : `「${voiceData?.spaceName || '这张卡'}」里还没有认识的人。聊几轮，正文里说过话的人会自动出现在这里。`));
+          ? '当前没有打开角色卡。请先在酒馆中选择一张，此处才会显示可配置的角色。'
+          : `当前角色卡还没有可联系的角色。在酒馆对话几轮后，正文中出现过的角色会自动加入。`));
 
       const voiceList = el('div', 'voice-bind-list');
       for (const person of list) {
@@ -845,7 +845,7 @@ export async function mount(root, ctx) {
           preview.textContent = '…';
           try {
             await api.voicePreview(name);
-            preview.textContent = '已播';
+            preview.textContent = '完成';
           } catch (e) {
             toast(e?.message ?? '试听失败');
             preview.textContent = '失败';
@@ -872,8 +872,8 @@ export async function mount(root, ctx) {
       try {
         const s = await api.voiceStats();
         const mb = (n) => (n / 1024 / 1024).toFixed(1);
-        cacheInfo.textContent = `已存 ${s.count ?? 0} 条，${mb(s.bytes ?? 0)} MB / 上限 ${mb(s.limit ?? 0)} MB`;
-      } catch { cacheInfo.textContent = '读不到缓存统计'; }
+        cacheInfo.textContent = `已缓存 ${s.count ?? 0} 条 · 占用 ${mb(s.bytes ?? 0)} MB · 上限 ${mb(s.limit ?? 0)} MB`;
+      } catch { cacheInfo.textContent = '无法读取缓存统计'; }
     };
     refreshCache();
 
@@ -946,7 +946,7 @@ export async function mount(root, ctx) {
     pages.home.append(menu);
 
     pages.home.append(el('p', 'settings-note',
-      '改动立刻保存。'));
+      '所有改动立即保存，无需手动确认。'));
   }
 
   const TITLES = { home: '设置', general: '常规', chat: '聊天模型', voice: '语音模型' };

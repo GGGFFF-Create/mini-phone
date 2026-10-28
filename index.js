@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.11.0';
+const VERSION = '0.11.1';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -642,7 +642,7 @@ async function onClickWave(event) {
     event.stopPropagation();
     const anyReady = tts?.readyFor({ role: currentSpace().name, text: '', emotion: '' });
     if (!anyReady?.ok) {
-      notify(anyReady?.why ?? '语音还没配好：设置 → 语音');
+      notify(anyReady?.why ?? '尚未配置语音：请在 设置 → 语音模型 中完成配置');
       openPanel();
       return;
     }
@@ -669,7 +669,7 @@ async function onClickWave(event) {
 
   const ready = tts?.readyFor(line);
   if (!ready?.ok) {
-    notify(ready?.why ?? '语音还没配好：设置 → 语音');
+    notify(ready?.why ?? '尚未配置语音：请在 设置 → 语音模型 中完成配置');
     openPanel();
     return;
   }
@@ -686,7 +686,7 @@ async function onClickWave(event) {
     });
   } catch (e) {
     setState('error');
-    notify(`没念出来：${e?.message ?? e}`);
+    notify(`朗读失败：${e?.message ?? e}`);
   }
 }
 

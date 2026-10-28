@@ -188,7 +188,7 @@ export async function mount(root, ctx) {
   searchRow.append(el('span', 'chat-search-icon', '🔍'));
   const searchInput = el('input');
   searchInput.type = 'text';
-  searchInput.placeholder = '搜索聊天和联系人';
+  searchInput.placeholder = '搜索会话或联系人';
   searchRow.append(searchInput);
   wrap.append(searchRow);
 
@@ -227,7 +227,7 @@ export async function mount(root, ctx) {
 
     const av = el('button', 'chat-head-avatar');
     av.type = 'button';
-    av.title = '我是谁';
+    av.title = '个人资料';
     av.addEventListener('click', () => ctx.openApp?.('me'));
     head.append(av);
 
@@ -322,9 +322,9 @@ export async function mount(root, ctx) {
         icon: '💬',
         title: query ? '没有匹配的会话' : '还没有聊天',
         text: query
-          ? '换个词试试，或者去联系人里找人。'
-          : '点右上角的加号找人聊天。会话也可以在酒馆聊几轮后自动出现。',
-        action: query ? null : { label: '去联系人', run: () => switchTab('contacts') },
+          ? '请更换关键词，或到联系人列表查找。'
+          : '点击右上角的加号选择联系人开始私聊。在酒馆对话几轮后，正文中出现过的角色也会自动加入。',
+        action: query ? null : { label: '查看联系人', run: () => switchTab('contacts') },
       }));
       return;
     }
@@ -340,7 +340,7 @@ export async function mount(root, ctx) {
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', t.name));
       const last = t.messages?.[t.messages.length - 1];
-      main.append(el('span', 'row-preview', last ? previewOf(last) : '还没有消息'));
+      main.append(el('span', 'row-preview', last ? previewOf(last) : '暂无消息'));
 
       const meta = el('span', 'row-meta');
       if (last) meta.append(el('span', 'row-time', timeOf(last.at)));
@@ -360,10 +360,10 @@ export async function mount(root, ctx) {
     if (!all.length) {
       body.append(emptyState({
         icon: '👤',
-        title: contacts.hasSpace ? `「${contacts.spaceName}」里还没有人` : '没有打开角色卡',
+        title: contacts.hasSpace ? `「${contacts.spaceName}」还没有可联系的角色` : '当前没有打开角色卡',
         text: contacts.hasSpace
-          ? '在酒馆里聊几轮，正文里说过话的人会自动出现在这里。'
-          : '先去酒馆里选一张角色卡。',
+          ? '在酒馆对话几轮后，正文中出现过的角色会自动加入。也可在下方为已有角色配置音色。'
+          : '请先在酒馆中选择一张角色卡，此处才会显示可联系的角色。',
       }));
       return;
     }
@@ -375,10 +375,10 @@ export async function mount(root, ctx) {
     body.append(title);
 
     body.append(el('p', 'chat-section-count',
-      `好友 · ${list.length}${query ? `（搜索「${query}」）` : ''}`));
+      `联系人 · ${list.length}${query ? `（搜索「${query}」）` : ''}`));
 
     if (!list.length) {
-      body.append(emptyState({ icon: '🔍', title: '没有匹配的人', text: '换个词试试。' }));
+      body.append(emptyState({ icon: '🔍', title: '没有匹配的联系人', text: '请更换关键词后重试。' }));
       return;
     }
 
@@ -390,7 +390,7 @@ export async function mount(root, ctx) {
 
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', person.name));
-      main.append(el('span', 'row-preview', person.hasVoice ? '角色 · 能发语音消息' : '角色 · 还没有配音'));
+      main.append(el('span', 'row-preview', person.hasVoice ? '角色 · 已配置语音' : '角色 · 未配置语音'));
 
       const meta = el('span', 'row-meta');
       meta.append(el('span', 'row-chevron', '›'));
@@ -424,7 +424,7 @@ export async function mount(root, ctx) {
 
     panel.append(el('div', 'sheet-title', `「${name}」的头像`));
 
-    const change = el('button', 'sheet-item', '从本地选一张图');
+    const change = el('button', 'sheet-item', '从本地选择图片');
     change.type = 'button';
     change.addEventListener('click', async () => {
       sheet.remove();
@@ -433,18 +433,18 @@ export async function mount(root, ctx) {
         if (!dataUrl) return;
         await api.avatarSet(name, dataUrl);
         await reloadPeople();
-        toast(`「${name}」的头像换好了`);
+        toast(`「${name}」的头像已更新`);
       } catch (e) { toast(e?.message ?? '换头像失败'); }
     });
 
-    const reset = el('button', 'sheet-item', '恢复酒馆里的封面');
+    const reset = el('button', 'sheet-item', '恢复为酒馆角色卡封面');
     reset.type = 'button';
     reset.addEventListener('click', async () => {
       sheet.remove();
       try {
         await api.avatarClear(name);
         await reloadPeople();
-        toast(`「${name}」已恢复默认`);
+        toast(`「${name}」已恢复为默认封面`);
       } catch (e) { toast(e?.message ?? '恢复失败'); }
     });
 
@@ -512,7 +512,7 @@ export async function mount(root, ctx) {
     const msgs = active.messages ?? [];
 
     if (!msgs.length) {
-      scroll.append(el('p', 'empty', `和「${active.name}」还没有消息。说点什么吧。`));
+      scroll.append(el('p', 'empty', `与「${active.name}」还没有聊天记录。`));
     }
 
     let lastAt = 0;
@@ -592,7 +592,7 @@ export async function mount(root, ctx) {
     const sheet = el('div', 'sheet');
     const panel = el('div', 'sheet-panel');
 
-    const bring = el('button', 'sheet-item', '把这段聊天带进下一次正文');
+    const bring = el('button', 'sheet-item', '将本段对话写入下一段正文');
     bring.type = 'button';
     bring.addEventListener('click', async () => {
       try {
@@ -602,13 +602,13 @@ export async function mount(root, ctx) {
       sheet.remove();
     });
 
-    const preview = el('button', 'sheet-item', '看看这次会发多少字');
+    const preview = el('button', 'sheet-item', '预估本次上下文用量');
     preview.type = 'button';
     preview.addEventListener('click', async () => {
       try {
         const p = await api.preview(active.id);
         const detail = p.blocks.map(b => `${b.name} ${b.chars}`).join(' · ');
-        toast(`约 ${p.chars} 字：${detail}`.slice(0, 110));
+        toast(`约 ${p.chars} 字｜${detail}`.slice(0, 110));
       } catch (e) { toast(e?.message ?? '失败'); }
       sheet.remove();
     });
