@@ -20,20 +20,45 @@ const el = (tag, cls, text) => {
   return n;
 };
 
-/** 头像：有图用图，没图用首字。图挂了也退回首字，不让它显示裂图。 */
-function avatarEl(name, src, size = '') {
-  const box = el('span', `avatar ${size}`.trim());
+/**
+ * 头像：有图用图，没图用首字。图挂了也退回首字，不让它显示裂图。
+ *
+ * 传了 onEdit 就变成可点的按钮 —— 点它换头像，点别的地方走原来的逻辑。
+ */
+function avatarEl(name, src, { onEdit = null, size = '' } = {}) {
   const label = String(name ?? '?');
+  const box = document.createElement(onEdit ? 'button' : 'span');
+  box.className = `avatar ${size}`.trim() + (onEdit ? ' avatar-edit' : '');
+
+  const content = el('span', 'avatar-content');
+  content.textContent = label.slice(0, 1);
+
   if (src) {
     const img = document.createElement('img');
     img.src = src;
     img.alt = label;
     img.decoding = 'async';
-    img.addEventListener('error', () => { img.remove(); box.textContent = label.slice(0, 1); });
-    box.append(img);
-  } else {
-    box.textContent = label.slice(0, 1);
+    content.textContent = '';
+    img.addEventListener('error', () => {
+      img.remove();
+      content.textContent = label.slice(0, 1);
+    });
+    content.append(img);
   }
+  box.append(content);
+
+  if (onEdit) {
+    box.type = 'button';
+    box.title = `换「${label}」的头像`;
+    box.setAttribute('aria-label', `换「${label}」的头像`);
+    box.append(el('span', 'avatar-edit-dot', '✎'));
+    box.addEventListener('click', (e) => {
+      e.stopPropagation();     // 别触发整行的「开始聊天」
+      e.preventDefault();
+      onEdit(label);
+    });
+  }
+
   return box;
 }
 
@@ -211,7 +236,7 @@ export async function mount(root, ctx) {
     for (const t of threads) {
       const row = el('button', 'row');
       row.type = 'button';
-      row.append(avatarEl(t.name, t.avatar));
+      row.append(avatarEl(t.name, t.avatar, { onEdit: (n) => openAvatarMenu(n) }));
 
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', t.name));
@@ -251,7 +276,7 @@ export async function mount(root, ctx) {
     for (const person of list) {
       const row = el('button', 'row');
       row.type = 'button';
-      row.append(avatarEl(person.name, person.avatar));
+      row.append(avatarEl(person.name, person.avatar, { onEdit: (n) => openAvatarMenu(n) }));
 
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', person.name));
@@ -423,6 +448,58 @@ export async function mount(root, ctx) {
   const drafts = new Map();
   const draftOf = (id) => drafts.get(id) ?? '';
   const saveDraft = (id, v) => { if (v) drafts.set(id, v); else drafts.delete(id); };
+
+  /* ------------------------------------------------------- 头像 */
+
+  /** 点头像弹这个：换图 / 恢复默认 */
+  function openAvatarMenu(name) {
+    const sheet = el('div', 'sheet');
+    const panel = el('div', 'sheet-panel');
+
+    panel.append(el('div', 'sheet-title', `「${name}」的头像`));
+
+    const change = el('button', 'sheet-item', '从本地选一张图');
+    change.type = 'button';
+    change.addEventListener('click', async () => {
+      sheet.remove();
+      try {
+        const dataUrl = await ctx.pickImage(160);
+        if (!dataUrl) return;                    // 用户取消
+        await api.avatarSet(name, dataUrl);
+        await reloadPeople();
+        toast(`「${name}」的头像换好了`);
+      } catch (e) { toast(e?.message ?? '换头像失败'); }
+    });
+
+    const reset = el('button', 'sheet-item', '恢复酒馆里的封面');
+    reset.type = 'button';
+    reset.addEventListener('click', async () => {
+      sheet.remove();
+      try {
+        await api.avatarClear(name);
+        await reloadPeople();
+        toast(`「${name}」已恢复默认`);
+      } catch (e) { toast(e?.message ?? '恢复失败'); }
+    });
+
+    const cancel = el('button', 'sheet-item sheet-cancel', '取消');
+    cancel.type = 'button';
+    cancel.addEventListener('click', () => sheet.remove());
+
+    panel.append(change, reset, cancel);
+    sheet.append(panel);
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.remove(); });
+    root.append(sheet);
+  }
+
+  /** 头像变了之后，把会话和联系人都重拉一遍 */
+  async function reloadPeople() {
+    try {
+      threads = await api.threads();
+      contacts = await api.contacts();
+      render();
+    } catch { /* 忽略 */ }
+  }
 
   /* ------------------------------------------------------- 数据 */
 
