@@ -17,7 +17,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const problems = [];
 const notes = [];
-const read = (p) => readFileSync(p, 'utf8');
+// 剥掉 BOM —— Windows 上的编辑器/脚本很容易给文件加 U+FEFF，JSON.parse 会直接失败
+const read = (p) => readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
 
 /* ---------------------------------------------------------- manifest */
 
@@ -49,6 +50,16 @@ if (!existsSync(manifestPath)) {
     } else {
       notes.push(`interceptor: globalThis.${name}(chat, contextSize, abort, type)`);
     }
+  }
+
+  // 版本号必须两处一致：manifest 给酒馆看，index.js 给 iframe 缓存用
+  const versionInEntry = /const\s+VERSION\s*=\s*['"]([^'"]+)['"]/.exec(entrySrc)?.[1];
+  if (!versionInEntry) {
+    problems.push('index.js 里没有 const VERSION —— iframe 的 ?v= 缓存会失效');
+  } else if (versionInEntry !== manifest.version) {
+    problems.push(`版本号不一致：manifest ${manifest.version} ≠ index.js ${versionInEntry}`);
+  } else {
+    notes.push(`版本 ${manifest.version}（两处一致）`);
   }
 
   const css = resolve(ROOT, manifest.css || '');

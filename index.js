@@ -21,6 +21,15 @@ import { createMomentsService } from './core/moments.js';
 const NS = 'miniPhone';
 const BASE = new URL('.', import.meta.url);
 
+/**
+ * 版本号。必须和 manifest.json 的 version 一致 —— load-check 会校验。
+ *
+ * 为什么要在代码里也写一份：iframe 的地址要带 `?v=` 才能让浏览器在更新后
+ * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
+ * 你"为什么没变"。
+ */
+const VERSION = '0.2.0';
+
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
   version: 1,
@@ -373,7 +382,8 @@ function buildPanel() {
   panel.setAttribute('aria-label', '小手机');
   iframe = document.createElement('iframe');
   iframe.title = '小手机';
-  iframe.src = new URL('ui/index.html', BASE).href;
+  // ?v= 版本号：更新后浏览器会重新拉 ui 下的文件。不带它，用户刷新也看不到改动。
+  iframe.src = new URL(`ui/index.html?v=${VERSION}`, BASE).href;
   iframe.setAttribute('allow', 'microphone; autoplay');
   panel.append(iframe);
   panel.addEventListener('close', () => bridge?.post('visibility', { open: false }));

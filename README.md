@@ -4,6 +4,8 @@
 
 **当前版本 0.2.0** — 聊天 + 朋友圈已可用，语音和生图是下一阶段。
 
+> 维护与发布流程见 [docs/UPDATING.md](docs/UPDATING.md)
+
 ## 它现在能做什么
 
 | 能力 | 说明 |
@@ -18,8 +20,17 @@
 
 ## 安装
 
+**方式一：酒馆里装**
+
+```
+扩展 → 安装扩展 → 粘贴 https://github.com/GGGFFF-Create/mini-phone
+```
+
+**方式二：手动（以后能用 git pull 更新）**
+
 ```powershell
-Copy-Item -Recurse . "<你的SillyTavern>\public\scripts\extensions\third-party\mini-phone"
+cd <SillyTavern>\public\scripts\extensions\third-party
+git clone https://github.com/GGGFFF-Create/mini-phone.git
 ```
 
 刷新酒馆 → 扩展菜单（魔棒）→「小手机」→ 设置里填模型接口。
