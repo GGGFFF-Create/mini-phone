@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.5.3';
+const VERSION = '0.6.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1004,6 +1004,23 @@ function createBridge() {
     },
 
     /* --- 聊天 --- */
+    /** 当前这张卡里可以聊天的人（消息 App 的「联系人」页用它） */
+    contacts: (source) => {
+      guard(source);
+      refreshRoster();
+      const space = currentSpace();
+      return {
+        spaceName: space.name,
+        hasSpace: space.key !== 'global',
+        list: (roster?.list ?? []).map(c => ({
+          name: c.name,
+          source: c.source ?? '',
+          avatar: avatarUrl(c),
+          hasVoice: !!settings.voice?.voices?.[c.name]?.voice,
+        })),
+      };
+    },
+
     threads: (source) => { guard(source); return chatSvc.listThreads(); },
     thread: (source, id) => { guard(source); return store.threads.get(id); },
     markRead: (source, id) => { guard(source); return store.threads.markRead(id); },

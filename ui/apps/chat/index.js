@@ -1,8 +1,16 @@
 /**
  * 消息 App。
  *
- * 两层：会话列表 → 会话窗口。
- * 返回键先退出窗口，再退出 App —— 由 back() 的返回值告诉外壳。
+ * 三层：
+ *   ① 消息列表（已有会话）
+ *   ② 联系人（当前这张卡里的人）—— 点一下就开新会话
+ *   ③ 会话窗口
+ *
+ * 【为什么要「联系人」这一层】
+ * 只有消息列表的话，新用户打开就是空的，不知道能跟谁聊。
+ * 联系人页是入口：从这儿挑一个人，会话就建起来了。
+ *
+ * 返回键逐层退：会话 → 列表 → 外壳（回桌面）。
  */
 
 const el = (tag, cls, text) => {
@@ -106,7 +114,6 @@ function bubbleBody(msg) {
       break;
 
     case 'moment':
-      // 朋友圈投递过来的，聊天里不显示内容，只留一个提示
       wrap.append(el('span', 'bubble-cap', '（发了一条朋友圈）'));
       break;
 
@@ -116,30 +123,79 @@ function bubbleBody(msg) {
   return wrap;
 }
 
+const previewOf = (m) => {
+  const map = {
+    photo: '[图片]', money: '[转账]', call: '[通话]', sticker: '[表情]',
+    gift: '[礼物]', song: '[歌曲]', location: '[位置]', moment: '[朋友圈]',
+  };
+  const tag = map[m.kind];
+  if (tag) return m.text ? `${tag} ${m.text}` : tag;
+  return m.text ?? '';
+};
+
 export async function mount(root, ctx) {
   const { api, toast, setTitle } = ctx;
+
   let threads = [];
-  let active = null;            // 当前打开的会话
+  let contacts = { list: [], spaceName: '', hasSpace: false };
+  let active = null;
+  let tab = 'threads';        // threads | contacts
   let typing = false;
   let sending = false;
 
-  const listView = el('div', 'view chat-list');
-  const threadView = el('div', 'view chat-thread hidden');
-  root.append(listView, threadView);
+  /* ------------------------------------------------------- 骨架 */
 
-  /* ------------------------------------------------------- 列表 */
+  const wrap = el('div', 'view chat-app');
+  const bar = el('div', 'chat-tabs');
+  const tabThreads = el('button', 'chat-tab on', '消息');
+  const tabContacts = el('button', 'chat-tab', '联系人');
+  tabThreads.type = 'button';
+  tabContacts.type = 'button';
+  bar.append(tabThreads, tabContacts);
 
-  function renderList() {
-    listView.innerHTML = '';
+  const body = el('div', 'chat-body');
+  wrap.append(bar, body);
+  root.append(wrap);
+
+  const switchTab = (name) => {
+    tab = name;
+    tabThreads.classList.toggle('on', name === 'threads');
+    tabContacts.classList.toggle('on', name === 'contacts');
+    render();
+  };
+  tabThreads.addEventListener('click', () => switchTab('threads'));
+  tabContacts.addEventListener('click', () => switchTab('contacts'));
+
+  /* ------------------------------------------------------- 渲染 */
+
+  function render() {
+    body.innerHTML = '';
+    if (active) { renderThread(); return; }
+    bar.classList.remove('hidden');
+    if (tab === 'contacts') renderContacts();
+    else renderThreads();
+  }
+
+  function renderThreads() {
     if (!threads.length) {
-      listView.append(el('p', 'empty', '还没有会话。\n在酒馆里聊几轮，或在这里挑一个角色开始。'));
+      const empty = el('div', 'chat-empty');
+      empty.append(el('div', 'chat-empty-icon', '💬'));
+      empty.append(el('b', '', '还没有会话'));
+      empty.append(el('p', '', '去「联系人」里挑一个角色，就能开始聊。'));
+      const go = el('button', 'pill-btn', '打开联系人');
+      go.type = 'button';
+      go.addEventListener('click', () => switchTab('contacts'));
+      empty.append(go);
+      body.append(empty);
       return;
     }
+
+    const list = el('div', 'list');
     for (const t of threads) {
       const row = el('button', 'row');
       row.type = 'button';
+      row.append(el('span', 'avatar', (t.name || '?').slice(0, 1)));
 
-      const av = el('span', 'avatar', (t.name || '?').slice(0, 1));
       const main = el('span', 'row-main');
       main.append(el('b', 'row-name', t.name));
       const last = t.messages?.[t.messages.length - 1];
@@ -149,29 +205,71 @@ export async function mount(root, ctx) {
       if (last) meta.append(el('span', 'row-time', timeOf(last.at)));
       if (t.unread > 0) meta.append(el('span', 'row-badge', String(t.unread)));
 
-      row.append(av, main, meta);
+      row.append(main, meta);
       row.addEventListener('click', () => openThread(t.id));
-      listView.append(row);
+      list.append(row);
     }
+    body.append(list);
   }
 
-  const previewOf = (m) => {
-    const map = { photo: '[图片]', money: '[转账]', call: '[通话]', sticker: '[表情]', gift: '[礼物]', song: '[歌曲]', location: '[位置]', moment: '[朋友圈]' };
-    return map[m.kind] ? (m.text ? `${map[m.kind]} ${m.text}` : map[m.kind]) : (m.text ?? '');
-  };
+  function renderContacts() {
+    const list = contacts.list ?? [];
+
+    if (!list.length) {
+      const empty = el('div', 'chat-empty');
+      empty.append(el('div', 'chat-empty-icon', '👤'));
+      empty.append(el('b', '', contacts.hasSpace ? `「${contacts.spaceName}」里还没有人` : '没有打开角色卡'));
+      empty.append(el('p', '', contacts.hasSpace
+        ? '在酒馆里聊几轮，正文里说过话的人会自动出现。'
+        : '先去酒馆里选一张角色卡。'));
+      body.append(empty);
+      return;
+    }
+
+    const head = el('p', 'chat-contact-head',
+      contacts.spaceName ? `「${contacts.spaceName}」里的人` : '可以聊天的人');
+    body.append(head);
+
+    const box = el('div', 'list');
+    for (const person of list) {
+      const row = el('button', 'row');
+      row.type = 'button';
+      row.append(el('span', 'avatar', person.name.slice(0, 1)));
+
+      const main = el('span', 'row-main');
+      main.append(el('b', 'row-name', person.name));
+      main.append(el('span', 'row-preview', person.hasVoice ? '能发语音消息' : '还没有配音色'));
+
+      const meta = el('span', 'row-meta');
+      meta.append(el('span', 'row-chevron', '›'));
+
+      row.append(main, meta);
+      row.addEventListener('click', () => startChat(person.name));
+      box.append(row);
+    }
+    body.append(box);
+  }
 
   /* ------------------------------------------------------- 会话 */
+
+  async function startChat(name) {
+    try {
+      const t = await api.ensureThread({ type: 'dm', name, partner: name });
+      await openThread(t.id);
+    } catch (e) {
+      toast(`开不了：${e?.message ?? e}`);
+    }
+  }
 
   async function openThread(id) {
     try {
       active = await api.thread(id);
       if (!active) throw new Error('会话不存在');
       await api.markRead(id);
-      listView.classList.add('hidden');
-      threadView.classList.remove('hidden');
+      bar.classList.add('hidden');
       setTitle(active.name);
-      renderThread();
-      refreshListInBackground();
+      render();
+      refreshInBackground();
     } catch (e) {
       toast(`打不开：${e?.message ?? e}`);
     }
@@ -180,27 +278,25 @@ export async function mount(root, ctx) {
   function closeThread() {
     active = null;
     typing = false;
-    threadView.classList.add('hidden');
-    listView.classList.remove('hidden');
+    bar.classList.remove('hidden');
     setTitle('消息');
-    renderList();
-    refreshListInBackground();
+    render();
+    refreshInBackground();
   }
 
   function renderThread() {
-    threadView.innerHTML = '';
+    body.innerHTML = '';
     if (!active) return;
 
     const scroll = el('div', 'thread-scroll');
     const msgs = active.messages ?? [];
 
     if (!msgs.length) {
-      scroll.append(el('p', 'empty', '还没有消息。说点什么吧。'));
+      scroll.append(el('p', 'empty', `和「${active.name}」还没有消息。说点什么吧。`));
     }
 
     let lastAt = 0;
     for (const m of msgs) {
-      // 时间分隔：每条隔 5 分钟以上插一行
       if (m.at && m.at - lastAt > 5 * 60_000) {
         scroll.append(el('div', 'thread-time', timeOf(m.at)));
         lastAt = m.at;
@@ -209,12 +305,7 @@ export async function mount(root, ctx) {
       const row = el('div', `bubble-row ${mine ? 'mine' : 'theirs'}`);
       const bubble = el('div', `bubble ${mine ? 'mine' : 'theirs'}`);
       bubble.append(bubbleBody(m));
-
-      // 对方发的、有文字的，给个声波按钮
-      if (!mine && m.text && m.kind !== 'moment') {
-        bubble.append(sayButton(m));
-      }
-
+      if (!mine && m.text && m.kind !== 'moment') bubble.append(sayButton(m));
       bubble.append(el('span', 'bubble-time', timeOf(m.at)));
       row.append(bubble);
       scroll.append(row);
@@ -228,10 +319,10 @@ export async function mount(root, ctx) {
       scroll.append(row);
     }
 
-    threadView.append(scroll);
+    body.append(scroll);
 
     /* 输入区 */
-    const bar = el('div', 'composer');
+    const composer = el('div', 'composer');
     const input = el('input', 'composer-input');
     input.type = 'text';
     input.placeholder = '发消息…';
@@ -244,8 +335,8 @@ export async function mount(root, ctx) {
     more.type = 'button';
     more.title = '更多';
 
-    bar.append(more, input, send);
-    threadView.append(bar);
+    composer.append(more, input, send);
+    body.append(composer);
 
     input.addEventListener('input', () => saveDraft(active.id, input.value));
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) doSend(); });
@@ -267,19 +358,16 @@ export async function mount(root, ctx) {
         await api.send(active.id, text);
         active = await api.thread(active.id);
         typing = false;
-        renderThread();
+        render();
       } catch (e) {
         toast(e?.message ?? '发送失败');
         input.value = text;
-        send.disabled = false;
       } finally {
         sending = false;
         send.disabled = false;
       }
     }
   }
-
-  /* ------------------------------------------------------- 更多 */
 
   function openMore() {
     const sheet = el('div', 'sheet');
@@ -321,43 +409,43 @@ export async function mount(root, ctx) {
 
   /* ------------------------------------------------------- 数据 */
 
-  async function refreshListInBackground() {
+  async function refreshInBackground() {
     try {
       threads = await api.threads();
-      if (!active) renderList();
+      contacts = await api.contacts();
+      if (!active) render();
     } catch { /* 忽略 */ }
   }
 
-  /* ------------------------------------------------------- 初始化 */
-
   try {
     threads = await api.threads();
+    contacts = await api.contacts();
   } catch (e) {
-    threads = [];
-    toast(`读不到会话：${e?.message ?? e}`);
+    toast(`读不到数据：${e?.message ?? e}`);
   }
-  renderList();
+  render();
 
   return {
     title: '消息',
 
     back() {
       if (active) { closeThread(); return true; }
+      if (tab === 'contacts') { switchTab('threads'); return true; }
       return false;              // 交回外壳 → 回桌面
     },
 
     refresh() {
-      refreshListInBackground();
+      refreshInBackground();
       if (active) {
         api.thread(active.id).then(t => {
-          if (t && active && t.id === active.id) { active = t; renderThread(); }
+          if (t && active && t.id === active.id) { active = t; render(); }
         }).catch(() => {});
       }
     },
 
     onTyping({ on } = {}) {
       typing = !!on;
-      if (active) renderThread();
+      if (active) render();
     },
 
     leave() {

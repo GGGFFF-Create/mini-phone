@@ -251,6 +251,79 @@ html, body {
 
 /* ------------------------------------------------------- 会话 */
 
+.chat-app { height: 100%; display: flex; flex-direction: column; }
+
+/* 顶部两个页签：消息 / 联系人 */
+.chat-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.chat-tabs.hidden { display: none; }
+.chat-tab {
+  flex: 1 1 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.chat-tab.on {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.chat-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 28px;
+  text-align: center;
+}
+.chat-empty-icon { font-size: 34px; opacity: .5; margin-bottom: 2px; }
+.chat-empty b { font-size: 14.5px; color: var(--ink); }
+.chat-empty p {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+}
+
+.chat-contact-head {
+  margin: 0;
+  padding: 12px 16px 6px;
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  letter-spacing: .02em;
+}
+
+.row-chevron {
+  font-size: 17px;
+  line-height: 1;
+  color: var(--ink-dim);
+  opacity: .6;
+}
+
 .chat-thread { height: 100%; }
 
 .thread-scroll {
