@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.12.3';
+const VERSION = '0.12.4';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1395,6 +1395,64 @@ function createBridge() {
         if (n) seen.add(n);
       }
       return [...seen];
+    },
+
+    /**
+     * 从当前角色卡的聊天记录里提取角色。
+     *
+     * 和 scanSpeakers 的区别：那个是"顺手扫最近 200 条"，跟着切换角色卡
+     * 自动跑；这个是用户主动点按钮，扫**整段历史**，能翻出很早以前
+     * 只说过一句话的角色。放在「角色」页，不掺和聊天那边。
+     */
+    scanHistory: (source) => {
+      guard(source);
+      const ctx = context();
+      const chat = ctx?.chat ?? [];
+      const proto = settings.protocol ?? DEFAULT_PROTOCOL;
+      const me = String(ctx?.name1 ?? '').trim();
+
+      const before = new Set((roster?.list ?? []).map(c => c.name));
+      const found = new Set();
+      const fallback = new Set();
+      let scanned = 0;
+
+      for (const m of chat) {
+        if (!m || m.is_user || m.is_system || typeof m.mes !== 'string') continue;
+        if (!m.mes.trim()) continue;
+        scanned++;
+
+        let hit = 0;
+        try {
+          for (const line of parseLines(m.mes, proto)) {
+            const role = String(line?.role ?? '').trim();
+            if (role && role !== me && looksLikeName(role)) { found.add(role); hit++; }
+          }
+        } catch { /* 单条解析失败不影响整轮 */ }
+
+        // 这一条没有台词标签 → 记下说话人，等最后兜底用
+        if (!hit) {
+          const who = String(m.name ?? '').trim();
+          if (who && who !== me && looksLikeName(who) && !/^sillytavern\s+system$/i.test(who)) {
+            fallback.add(who);
+          }
+        }
+      }
+
+      // 整段历史一句台词标签都没有，才用消息说话人兜底
+      if (!found.size && fallback.size) for (const n of fallback) found.add(n);
+
+      tagRoles([...found]);
+      refreshRoster();
+
+      const after = (roster?.list ?? []).map(c => c.name);
+      const added = after.filter(n => !before.has(n));
+
+      return {
+        scanned,                       // 扫了多少条消息
+        found: [...found],
+        added,                         // 这次新加进来的
+        total: after.length,
+      };
     },
 
     /** 手动加一个角色到当前卡 */

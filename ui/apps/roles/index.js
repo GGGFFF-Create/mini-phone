@@ -68,6 +68,38 @@ export async function mount(root, ctx) {
       ? `当前角色卡「${data.spaceName}」：出现在正文里的角色会自动加入，也可以手动添加。`
       : '当前没有打开角色卡。请先在酒馆中选择一张，角色才会出现在这里。'));
 
+    /*
+     * 从聊天记录导入。
+     *
+     * 切换角色卡时会自动扫最近 200 条，但更早的角色捞不到。
+     * 这个按钮扫整段历史，专门用来"把这张卡里所有说过话的人都翻出来"。
+     * 放在角色页，和聊天那边没关系。
+     */
+    const tools = el('div', 'roles-tools');
+    const scanBtn = el('button', 'pill-btn', '从聊天记录导入');
+    scanBtn.type = 'button';
+
+    const scanOut = el('span', 'roles-scan-out', '');
+    scanBtn.addEventListener('click', async () => {
+      if (scanBtn.disabled) return;
+      scanBtn.disabled = true;
+      scanOut.textContent = '扫描中…';
+      try {
+        const r = await api.scanHistory();
+        await reload();
+        scanOut.textContent = r.added.length
+          ? `扫了 ${r.scanned} 条，新增 ${r.added.length} 个：${r.added.join('、')}`
+          : `扫了 ${r.scanned} 条，没有新角色`;
+      } catch (e) {
+        scanOut.textContent = `扫描失败：${e?.message ?? e}`;
+      } finally {
+        scanBtn.disabled = false;
+      }
+    });
+
+    tools.append(scanBtn, scanOut);
+    view.append(tools);
+
     if (loading) {
       view.append(el('p', 'roles-note', '读取中…'));
       return;
