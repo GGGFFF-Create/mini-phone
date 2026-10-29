@@ -139,6 +139,28 @@ export async function mount(root, ctx) {
     const body = el('p', 'listen-card-text', line?.translation || line?.text || '');
     card.append(body);
 
+    /* 句子导航：一句一句换，或者打开目录直接跳 */
+    const steps = el('div', 'listen-steps');
+
+    const prevLine = el('button', 'listen-step-btn', '‹ 上一句');
+    prevLine.type = 'button';
+    prevLine.disabled = lineIndex <= 0;
+    prevLine.addEventListener('click', () => goLine(-1));
+    steps.append(prevLine);
+
+    const toc = el('button', 'listen-step-btn listen-toc-btn', '目录');
+    toc.type = 'button';
+    toc.addEventListener('click', openToc);
+    steps.append(toc);
+
+    const nextLine = el('button', 'listen-step-btn', '下一句 ›');
+    nextLine.type = 'button';
+    nextLine.disabled = lineIndex >= role.lines.length - 1;
+    nextLine.addEventListener('click', () => goLine(1));
+    steps.append(nextLine);
+
+    card.append(steps);
+
     if (!role.hasVoice) {
       card.append(el('span', 'listen-card-warn', `等待为「${role.name}」选择音色`));
     }
@@ -182,12 +204,92 @@ export async function mount(root, ctx) {
     try { api.voiceStop(); } catch { /* 忽略 */ }
   }
 
+  /** 换句子；播放中换句就停掉，避免串音 */
+  function goLine(delta) {
+    const role = currentRole();
+    if (!role) return;
+    const next = lineIndex + delta;
+    if (next < 0 || next >= role.lines.length) return;
+    if (playing) { stop(); }
+    lineIndex = next;
+    render();
+  }
+
+  /**
+   * 目录：每页 10 句，先选页再选句。
+   * 199 句的角色一页列完没法看，分页是必须的。
+   */
+  const TOC_PAGE = 10;
+  let tocPage = 0;
+
+  function openToc() {
+    const role = currentRole();
+    if (!role) return;
+
+    const sheet = el('div', 'sheet');
+    const panel = el('div', 'sheet-panel listen-toc');
+
+    const head = el('div', 'listen-toc-head');
+    head.append(el('b', '', role.name));
+    head.append(el('span', '', `共 ${role.lines.length} 句`));
+    panel.append(head);
+
+    /* 页码条 */
+    const pages = Math.max(1, Math.ceil(role.lines.length / TOC_PAGE));
+    if (tocPage >= pages) tocPage = pages - 1;
+
+    const pager = el('div', 'listen-toc-pager');
+    for (let i = 0; i < pages; i++) {
+      const from = i * TOC_PAGE + 1;
+      const to = Math.min(role.lines.length, (i + 1) * TOC_PAGE);
+      const btn = el('button', `listen-toc-page ${i === tocPage ? 'on' : ''}`.trim(), `${from}-${to}`);
+      btn.type = 'button';
+      btn.addEventListener('click', () => { tocPage = i; sheet.remove(); openToc(); });
+      pager.append(btn);
+    }
+    panel.append(pager);
+
+    /* 当前页的句子 */
+    const list = el('div', 'listen-toc-list');
+    const start = tocPage * TOC_PAGE;
+    const end = Math.min(role.lines.length, start + TOC_PAGE);
+
+    for (let i = start; i < end; i++) {
+      const l = role.lines[i];
+      const row = el('button', `listen-toc-row ${i === lineIndex ? 'on' : ''}`.trim());
+      row.type = 'button';
+
+      const no = el('span', 'listen-toc-no', String(i + 1));
+      const txt = el('span', 'listen-toc-text', (l.translation || l.text || '').slice(0, 40));
+      row.append(no, txt);
+
+      row.addEventListener('click', () => {
+        if (playing) stop();
+        lineIndex = i;
+        sheet.remove();
+        render();
+      });
+      list.append(row);
+    }
+    panel.append(list);
+
+    const close = el('button', 'sheet-item sheet-cancel', '关闭');
+    close.type = 'button';
+    close.addEventListener('click', () => sheet.remove());
+    panel.append(close);
+
+    sheet.append(panel);
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) sheet.remove(); });
+    root.append(sheet);
+  }
+
   function goRole(delta) {
     const nextIndex = roleIndex + delta;
     if (nextIndex < 0 || nextIndex >= data.roles.length) return;
     stop();
     roleIndex = nextIndex;
     lineIndex = 0;
+    tocPage = 0;
     render();
   }
 
