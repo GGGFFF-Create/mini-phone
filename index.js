@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.12.1';
+const VERSION = '0.12.2';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1437,12 +1437,43 @@ function createBridge() {
     /** 会话列表，每条带上对方头像 */
     threads: (source) => {
       guard(source);
-      return chatSvc.listThreads().then(list => list.map(t => ({
-        ...t,
-        avatar: avatarUrl(t.partner || t.name),
-      })));
+      refreshRoster();
+
+      const space = currentSpace();
+      const known = new Set((roster?.list ?? []).map(c => c.name));
+
+      return chatSvc.listThreads().then((list) => {
+        const visible = list.filter((t) => {
+          /*
+           * 老版本把卡名当成角色，于是有人和「圣樱学院」这种卡名建了会话。
+           * 那不是角色，不该出现在聊天列表里。
+           *
+           * 判断：名字等于当前卡名、且不在当前名册里 —— 隐藏。
+           * 数据不动，只是不显示；以后名册里真出现同名的会重新显示。
+           */
+          const name = String(t?.partner || t?.name || '').trim();
+          if (space.type === 'card' && name && name === space.name && !known.has(name)) return false;
+          return true;
+        });
+
+        return visible.map(t => ({
+          ...t,
+          avatar: avatarUrl(t.partner || t.name),
+        }));
+      });
     },
-    thread: (source, id) => { guard(source); return store.threads.get(id); },
+    thread: (source, id) => {
+      guard(source);
+      return store.threads.get(id).then((t) => {
+        if (!t) return null;
+        const space = currentSpace();
+        const name = String(t.partner || t.name || '').trim();
+        const known = (roster?.list ?? []).some(c => c.name === name);
+        // 和卡名建的无效会话：当作不存在
+        if (space.type === 'card' && name === space.name && !known) return null;
+        return { ...t, avatar: avatarUrl(name) };
+      });
+    },
     markRead: (source, id) => { guard(source); return store.threads.markRead(id); },
     unread: (source) => { guard(source); return chatSvc.unreadCount(); },
 
