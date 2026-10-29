@@ -122,8 +122,11 @@ export async function mount(root, ctx) {
     }
     box.append(av);
 
-    /* 名字 */
-    box.append(el('b', 'role-card-name', role.name));
+    /* 名字（主控角色带标记） */
+    const nameRow = el('div', 'role-card-name-row');
+    nameRow.append(el('b', 'role-card-name', role.name));
+    if (role.isPersona) nameRow.append(el('span', 'role-persona-tag', '主控'));
+    box.append(nameRow);
 
     /* 音色状态 */
     if (role.hasVoice) {
@@ -238,7 +241,9 @@ export async function mount(root, ctx) {
 
     const info = el('div', 'role-edit-info');
     info.append(el('b', '', role.name));
-    info.append(el('span', '', role.hasVoice ? '已配置语音' : '待选择音色'));
+    info.append(el('span', '', role.isPersona
+      ? '主控角色 · 只用于配音，不参与聊天'
+      : (role.hasVoice ? '已配置语音' : '待选择音色')));
     head.append(av, info);
     panel.append(head);
 
@@ -302,7 +307,8 @@ export async function mount(root, ctx) {
       panel.append(test);
     }
 
-    /* 移除 */
+    /* 移除（主控角色不给移除，他恒在册） */
+    if (!role.isPersona) {
     const del = el('button', 'sheet-item sheet-cancel', '从这张卡里移除');
     del.type = 'button';
     del.addEventListener('click', async () => {
@@ -314,6 +320,7 @@ export async function mount(root, ctx) {
       } catch (e) { toast(e?.message ?? '移除失败'); }
     });
     panel.append(del);
+    }
 
     const cancel = el('button', 'sheet-item sheet-cancel', '取消');
     cancel.type = 'button';

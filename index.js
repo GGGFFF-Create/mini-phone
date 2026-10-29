@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.12.2';
+const VERSION = '0.12.3';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -203,14 +203,14 @@ function buildRoster() {
   // ① 当前卡的成员
   for (const name of space.members) {
     const n = String(name ?? '').trim();
-    if (!n || n === ctx?.name1) continue;
+    if (!n) continue;
     merged.set(n, { name: n, aliases: [], source: 'card', ...cardOf(n) });
   }
 
   // ② 手动加的（带 cardKey 的只在对应卡里出现）
   for (const c of settings.contacts ?? []) {
     const n = String(c?.name ?? '').trim();
-    if (!n || n === ctx?.name1) continue;
+    if (!n) continue;
     if (c.cardKey && c.cardKey !== space.key) continue;
     merged.set(n, { ...(merged.get(n) ?? {}), ...c, name: n, source: merged.get(n)?.source ?? 'manual' });
   }
@@ -218,7 +218,7 @@ function buildRoster() {
   // ③ 剧情里说过话的（老数据里可能存过模板残留，这里再筛一遍）
   for (const r of settings.seenRoles ?? []) {
     const n = String(r?.name ?? '').trim();
-    if (!n || n === ctx?.name1) continue;
+    if (!n) continue;
     if (!looksLikeName(n)) continue;
     if (!Array.isArray(r.cards) || !r.cards.includes(space.key)) continue;
     if (!merged.has(n)) merged.set(n, { name: n, aliases: r.aliases ?? [], source: 'story', ...cardOf(n) });
@@ -231,11 +231,31 @@ function buildRoster() {
    * 以前是无条件保留，结果 A 卡配过音色的角色会跑到 B 卡的角色列表里。
    */
   for (const n of Object.keys(settings.voice?.voices ?? {})) {
-    if (merged.has(n) || n === ctx?.name1) continue;
+    if (merged.has(n)) continue;
     const tagged = (settings.seenRoles ?? []).some(r =>
       r?.name === n && Array.isArray(r.cards) && r.cards.includes(space.key));
     if (!tagged) continue;
     merged.set(n, { name: n, aliases: [], source: 'voice', ...cardOf(n) });
+  }
+
+  /*
+   * ⑤ 主控角色（user persona）恒定在册。
+   *
+   * 音色列表里需要他 —— 玩家控制的主控角色也有台词（内心独白、
+   * 被朗读的动作描写），一样要配音色，绑定方式和普通角色完全相同。
+   *
+   * 但聊天列表里不能有他：玩家就是主控角色本人，
+   * 不存在"自己跟自己发消息"。所以这里标 isPersona，让聊天那边自己排掉。
+   */
+  const personaName = String(ctx?.name1 ?? '').trim();
+  if (personaName && looksLikeName(personaName) && !merged.has(personaName)) {
+    merged.set(personaName, {
+      name: personaName,
+      aliases: [],
+      source: 'persona',
+      isPersona: true,
+      ...cardOf(personaName),
+    });
   }
 
   /*
@@ -1347,6 +1367,7 @@ function createBridge() {
           name: c.name,
           avatar: avatarUrl(c.name),
           source: c.source ?? '',
+          isPersona: !!c.isPersona,
           engineId,
           engineName: eng?.name ?? '',
           engineKind: eng?.kind ?? '',
@@ -1381,7 +1402,7 @@ function createBridge() {
       guard(source);
       const n = String(name ?? '').trim();
       if (!n) throw new Error('角色名不能为空');
-      if (n === context()?.name1) throw new Error('不能用主角自己的名字');
+      // 主控角色恒在册，不需要手动加
       tagRoles([n]);
       refreshRoster();
       return true;
@@ -1425,12 +1446,15 @@ function createBridge() {
       return {
         spaceName: space.name,
         hasSpace: space.key !== 'global',
-        list: (roster?.list ?? []).map(c => ({
-          name: c.name,
-          source: c.source ?? '',
-          avatar: avatarUrl(c.name),
-          hasVoice: !!settings.voice?.voices?.[c.name]?.voice,
-        })),
+        // 聊天对象不含主控角色 —— 玩家就是他本人
+        list: (roster?.list ?? [])
+          .filter(c => !c.isPersona)
+          .map(c => ({
+            name: c.name,
+            source: c.source ?? '',
+            avatar: avatarUrl(c.name),
+            hasVoice: !!settings.voice?.voices?.[c.name]?.voice,
+          })),
       };
     },
 
@@ -1452,6 +1476,12 @@ function createBridge() {
            * 数据不动，只是不显示；以后名册里真出现同名的会重新显示。
            */
           const name = String(t?.partner || t?.name || '').trim();
+
+          // 主控角色不参与聊天：玩家自己跟自己发消息没有意义
+          const persona = String(context()?.name1 ?? '').trim();
+          if (name && persona && name === persona) return false;
+
+          // 老版本按卡名建的会话
           if (space.type === 'card' && name && name === space.name && !known.has(name)) return false;
           return true;
         });
@@ -1468,8 +1498,12 @@ function createBridge() {
         if (!t) return null;
         const space = currentSpace();
         const name = String(t.partner || t.name || '').trim();
+
+        // 主控角色不参与聊天
+        const persona = String(context()?.name1 ?? '').trim();
+        if (name && persona && name === persona) return null;
+
         const known = (roster?.list ?? []).some(c => c.name === name);
-        // 和卡名建的无效会话：当作不存在
         if (space.type === 'card' && name === space.name && !known) return null;
         return { ...t, avatar: avatarUrl(name) };
       });
