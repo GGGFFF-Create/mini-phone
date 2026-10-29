@@ -148,6 +148,11 @@ export function parseLines(message, protocol = DEFAULT_PROTOCOL, opts = {}) {
    * opts.loose === false 时跳过（有些调用方只想要严格结果）。
    */
   if (opts.loose === false) return [];
+
+  // 「引号 + 角色|情绪|原文」这种没标签的写法，优先于纯引号
+  const inline = parseInline(src);
+  if (inline.length) return inline;
+
   return parseLoose(src, opts.defaultRole ?? '');
 }
 
@@ -260,6 +265,54 @@ export function parseLoose(text, defaultRole = '') {
       start: m.index,
       end: re.lastIndex,
       confidence: 'loose',
+    });
+  }
+
+  return lines;
+}
+
+/**
+ * 解析「引号 + 竖线」格式（没有 XML 标签的那种）。
+ *
+ * 正文长这样：
+ *   “说起来也奇怪……”佩拉|疑惑|それにしても変な……
+ *    ↑译文            ↑角色 ↑情绪 ↑原文
+ *
+ * 很多卡用的是这个写法（比 <tts> 标签更省 token，模型也更容易照着写），
+ * 但它没有标签边界，之前完全识别不出来 —— 界面上一个声波都没有。
+ *
+ * 只认"引号后面紧跟着 角色|…"的形状，所以不会把普通旁白里的引号吃进来。
+ */
+export function parseInline(text) {
+  const src = String(text ?? '');
+  const lines = [];
+
+  // 引号内容 + 紧跟的角色名 + 竖线 + 剩下的（情绪|原文，或只有原文）
+  const re = /[\u201C"\u300C\u300E]([^\u201D"\u300D\u300F\n]{1,500})[\u201D"\u300D\u300F]\s*([^|\s\n]{1,16})\s*\|([^\n]{1,2000})/g;
+
+  let m;
+  while ((m = re.exec(src))) {
+    const translation = String(m[1] ?? '').trim();
+    const role = String(m[2] ?? '').trim();
+    const rest = String(m[3] ?? '');
+
+    if (translation.length < 2) continue;
+    if (!role || /^[0-9]+$/.test(role)) continue;     // 角色名不该是纯数字
+
+    const parts = rest.split('|');
+    const emotion = parts.length >= 2 ? String(parts[0] ?? '').trim().slice(0, 40) : '';
+    const body = (parts.length >= 2 ? parts.slice(1).join('|') : parts[0]).trim();
+
+    lines.push({
+      role,
+      emotion,
+      text: body || translation,
+      translation,
+      trStart: m.index + 1,                            // 引号内侧
+      trEnd: re.lastIndex - 1,
+      start: m.index,
+      end: re.lastIndex,
+      confidence: 'inline',
     });
   }
 
