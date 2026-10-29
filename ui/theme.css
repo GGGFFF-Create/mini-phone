@@ -227,6 +227,7 @@ html, body {
   pointer-events: none;
 }
 .tile[data-app='moments'] .tile-icon { background: linear-gradient(140deg, #ff9a76, #f2694f 60%, #d94f38); }
+.tile[data-app='listen'] .tile-icon { background: linear-gradient(140deg, #ffb3d1, #f06292 60%, #e04f7f); }
 .tile[data-app='me'] .tile-icon { background: linear-gradient(140deg, #6ee7b7, #34c759 60%, #23a04a); }
 .tile[data-app='settings'] .tile-icon { background: linear-gradient(140deg, #b6c1d4, #8b97ad 60%, #6d7889); }
 
@@ -1026,6 +1027,123 @@ html, body {
   font: inherit; font-size: 12.5px; font-weight: 600;
   cursor: pointer;
 }
+
+/* ------------------------------------------------------- 朗读 */
+
+.listen-view {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: block;
+  padding-bottom: 28px;
+  background: var(--bg-grad);
+}
+
+.listen-hero {
+  padding: 20px 18px 14px;
+  background: radial-gradient(120% 90% at 100% 0%, #ffe0ec 0%, transparent 60%), transparent;
+}
+:root[data-theme='dark'] .listen-hero {
+  background: radial-gradient(120% 90% at 100% 0%, #3a1e2c 0%, transparent 60%);
+}
+
+.listen-hero-title { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.listen-hero-title b { font-size: 26px; font-weight: 700; letter-spacing: -.01em; }
+.listen-hero-icon { font-size: 23px; }
+.listen-hero-sub { margin: 0; font-size: 12px; color: var(--ink-dim); }
+
+.listen-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 18px 14px;
+}
+
+.listen-play-all {
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ff9ec4, #f06292 60%, #e04f7f);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: 0 5px 16px rgba(240, 98, 146, .35);
+}
+.listen-play-all:disabled { opacity: .5; box-shadow: none; }
+.listen-play-all:active { transform: scale(.96); }
+
+.listen-list { display: flex; flex-direction: column; gap: 9px; padding: 0 14px; }
+
+.listen-row {
+  padding: 13px 14px;
+  border-radius: 15px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.listen-row:active { transform: scale(.99); }
+.listen-row:hover { box-shadow: var(--shadow-sm); }
+.listen-row.dim { opacity: .62; cursor: default; }
+
+.listen-row-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; flex-wrap: wrap; }
+.listen-who { font-size: 14px; font-weight: 650; color: #e04f7f; }
+:root[data-theme='dark'] .listen-who { color: #ff9ec4; }
+
+.listen-emotion {
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  color: #e04f7f;
+  background: rgba(240, 98, 146, .12);
+  border: 1px solid rgba(240, 98, 146, .25);
+}
+
+.listen-floor { margin-left: auto; font-size: 10.5px; color: var(--ink-dim); opacity: .75; }
+
+.listen-text {
+  margin: 0 0 9px;
+  font-size: 13.5px;
+  line-height: 1.62;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.listen-row-foot { display: flex; align-items: center; gap: 9px; }
+
+.listen-play {
+  padding: 7px 16px;
+  border: 1px solid rgba(240, 98, 146, .3);
+  border-radius: 999px;
+  background: rgba(240, 98, 146, .08);
+  color: #e04f7f;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+}
+:root[data-theme='dark'] .listen-play { color: #ff9ec4; }
+.listen-play:hover { background: rgba(240, 98, 146, .16); }
+.listen-play:disabled { opacity: .45; cursor: default; }
+
+.listen-note { font-size: 10.5px; color: var(--ink-dim); }
+
+.listen-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  padding: 44px 28px;
+  text-align: center;
+}
+.listen-empty b { font-size: 15px; }
+.listen-empty p { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--ink-dim); max-width: 260px; }
 
 /* ------------------------------------------------------- 角色（音色管理） */
 

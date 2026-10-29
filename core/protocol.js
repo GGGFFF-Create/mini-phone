@@ -224,6 +224,24 @@ export function plainLines(message, protocol) {
  */
 
 /**
+ * 像不像一个角色名。
+ *
+ * 正文里难免混进模板残留（{キャラ}、{{user}}）、markdown 标记（**名字**）、
+ * 纯数字、换行碎片。这些不该变成聊天对象、音色条目、朗读列表里的一行。
+ *
+ * 解析层自己就要过滤 —— 不能指望每个调用方都记得过一遍。
+ */
+export function looksLikeName(raw) {
+  const n = String(raw ?? '').trim();
+  if (!n || n.length > 30) return false;
+  if (/[{}$<>`\\*#\[\]|]/.test(n)) return false;
+  if (/[\r\n\t]/.test(n)) return false;
+  if (/^[0-9]+$/.test(n)) return false;
+  if (!/[\p{L}\p{N}]/u.test(n)) return false;
+  return true;
+}
+
+/**
  * 宽松解析：正文没有 <tts> 标签时，直接从常见对话格式里认台词。
  *
  * 【为什么需要】
@@ -255,8 +273,10 @@ export function parseLoose(text, defaultRole = '') {
       || /^\s*([^\s\uFF1A:\n\uFF0C\u3002\uFF01\uFF1F!?\u201C\u201D"\u300C\u300D\u300E\u300F]{1,16})\s*[\uFF1A:]/.exec(before)?.[1]?.trim()
       || '';
 
+    const cleaned = looksLikeName(speaker) ? speaker : '';
+    const fallbackRole = looksLikeName(defaultRole) ? String(defaultRole).trim() : '\u65C1\u767D';
     lines.push({
-      role: speaker || String(defaultRole ?? '').trim() || '\u65C1\u767D',
+      role: cleaned || fallbackRole,
       emotion: '',
       text: body,
       translation: body,
@@ -297,7 +317,7 @@ export function parseInline(text) {
     const rest = String(m[3] ?? '');
 
     if (translation.length < 2) continue;
-    if (!role || /^[0-9]+$/.test(role)) continue;     // 角色名不该是纯数字
+    if (!looksLikeName(role)) continue;     // 模板残留、纯数字、markdown 标记都不收
 
     const parts = rest.split('|');
     const emotion = parts.length >= 2 ? String(parts[0] ?? '').trim().slice(0, 40) : '';

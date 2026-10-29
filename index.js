@@ -10,7 +10,7 @@
  * 然后按 manifest.hooks 调用 enable / disable / dispose。hook 有 5 秒预算。
  */
 
-import { parseLines, renderLines, plainLines, diagnose, speechRule, KEEP_REPLY, protocolFromTemplate, DEFAULT_PROTOCOL, markLines, buttonsFromMarks, stripWaves, unmark, clearStage } from './core/protocol.js';
+import { looksLikeName, parseLines, renderLines, plainLines, diagnose, speechRule, KEEP_REPLY, protocolFromTemplate, DEFAULT_PROTOCOL, markLines, buttonsFromMarks, stripWaves, unmark, clearStage } from './core/protocol.js';
 import { extractPhone, hasPhone, phoneRule } from './core/phone.js';
 import { createRoster } from './core/routes.js';
 import { createStore } from './core/store.js';
@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.13.1';
+const VERSION = '0.14.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -293,20 +293,6 @@ function buildRoster() {
  * 把在正文里说过话的人登记到当前卡名下。
  * 全局一份表，每条带 cards 标记 —— 换卡不会丢，换回来还在。
  */
-/**
- * 像不像一个角色名。
- *
- * 正文里难免混进模板残留（{キャラ}、{{user}}）、占位符、换行碎片。
- * 这些不该变成聊天对象和音色条目。
- */
-function looksLikeName(raw) {
-  const n = String(raw ?? '').trim();
-  if (!n || n.length > 30) return false;
-  if (/[{}$<>`\\]/.test(n)) return false;        // 模板标记
-  if (/[\r\n\t]/.test(n)) return false;            // 换行碎片
-  if (!/[\p{L}\p{N}]/u.test(n)) return false;      // 至少一个字母或数字
-  return true;
-}
 
 function tagRoles(names, key = currentSpace().key) {
   if (!active || !key) return false;
@@ -623,7 +609,7 @@ const tokenOf = (meta) => `m${meta?.messageId ?? '?'}-${meta?.swipeId ?? 0}-${++
 
 /** 这条消息该不该加按钮 */
 function shouldDecorate(meta) {
-  if (!active || !settings?.voice?.enabled) return false;
+  if (!active) return false;
   if (!meta) return false;
   if (meta.isUser || meta.isSystem || meta.isReasoning) return false;
   if (Number(meta.messageId) < 0) return false;
@@ -648,7 +634,7 @@ function bindRender() {
     legacyFormatting = original;
     ctx.messageFormatting = function (text, name, isSystem, isUser, messageId, ...rest) {
       // 出任何问题都退回原样，绝不让正文变空
-      if (!active || !settings?.voice?.enabled) return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
+      if (!active) return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
       if (isSystem || isUser || !(Number(messageId) >= 0)) {
         return original.call(this, text, name, isSystem, isUser, messageId, ...rest);
       }
@@ -656,7 +642,7 @@ function bindRender() {
         const token = tokenOf({ messageId });
         renderTokens.set(messageId, token);
         // 先打隐形标记再交给酒馆渲染 —— 私用区字符不会被 markdown 转义
-        const marked = markLines(text, settings.protocol ?? DEFAULT_PROTOCOL, { token, defaultRole: currentSpace().name });
+        const marked = markLines(text, settings.protocol ?? DEFAULT_PROTOCOL, { token, defaultRole: '' });
         const html = original.call(this, marked, name, isSystem, isUser, messageId, ...rest);
         return withSayAll(buttonsFromMarks(html, { token }));
       } catch (e) {
@@ -681,7 +667,7 @@ function bindRender() {
  * 对话的走向时不用一句句点。
  */
 function withSayAll(html) {
-  if (!active || !settings?.voice?.enabled) return html;
+  if (!active) return html;
   if (typeof html !== 'string' || !html.includes('mp-line')) return html;
   return `${html}<button type="button" class="mp-sayall" data-say-all data-state="idle">▷ 念整段</button>`;
 }
@@ -735,12 +721,12 @@ function bindRenderStages(fm) {
       try {
         const token = tokenOf(meta);
         renderTokens.set(meta.messageId, token);
-        return markLines(text, proto(), { token, defaultRole: currentSpace().name });
+        return markLines(text, proto(), { token, defaultRole: '' });
       } catch { return text; }
     }, { stage: st.BEFORE_REGEX });
 
     fm.addHook((text, meta) => {
-      if (!active || !settings?.voice?.enabled) return unmark(text);
+      if (!active) return unmark(text);
       if (!meta || meta.isUser || meta.isSystem || meta.isReasoning) return text;
       try {
         return withSayAll(buttonsFromMarks(text, { token: renderTokens.get(meta.messageId) ?? '' }));
@@ -1454,6 +1440,50 @@ function createBridge() {
         found: [...found],
         added,                         // 这次新加进来的
         total: after.length,
+      };
+    },
+
+    /**
+     * 把当前聊天里所有台词抽出来，给「朗读」页用。
+     *
+     * 一条一条列出来（第几楼、谁说的、什么情绪、译文、原文），
+     * 用户可以单独点某一句，也可以全部连着播。
+     */
+    listenLines: (source) => {
+      guard(source);
+      const ctx = context();
+      const chat = ctx?.chat ?? [];
+      const proto = settings.protocol ?? DEFAULT_PROTOCOL;
+      const fallback = String(ctx?.name2 ?? '');
+      const out = [];
+
+      chat.forEach((m, floor) => {
+        if (!m || m.is_user || m.is_system || typeof m.mes !== 'string') return;
+        if (!m.mes.trim()) return;
+
+        let lines = [];
+        try { lines = parseLines(m.mes, proto, { defaultRole: '' }); } catch { lines = []; }
+
+        for (const l of lines) {
+          const role = String(l?.role ?? '').trim();
+          if (!role || !looksLikeName(role)) continue;
+          out.push({
+            floor,
+            role,
+            emotion: l.emotion ?? '',
+            text: l.text ?? '',
+            translation: l.translation ?? l.text ?? '',
+            hasVoice: !!String(settings.voice?.voices?.[role]?.voice ?? '').trim(),
+          });
+        }
+      });
+
+      return {
+        spaceName: currentSpace().name,
+        total: out.length,
+        ready: out.filter(x => x.hasVoice).length,
+        voiceEnabled: !!settings.voice?.enabled,
+        lines: out,
       };
     },
 
