@@ -82,7 +82,7 @@ function translationBefore(src, tagStart) {
  *   confidence: 'exact' | 'loose' | 'partial',
  * }>}
  */
-export function parseLines(message, protocol = DEFAULT_PROTOCOL) {
+export function parseLines(message, protocol = DEFAULT_PROTOCOL, opts = {}) {
   const src = String(message ?? '');
   if (!src || src.length > 500_000) return [];
 
@@ -138,7 +138,17 @@ export function parseLines(message, protocol = DEFAULT_PROTOCOL) {
     });
   }
 
-  return out;
+  if (out.length) return out;
+
+  /*
+   * 一句 <tts> 都没有 → 退回宽松解析。
+   *
+   * 模型不一定会照格式写。没有标签就没台词，没台词就没声波按钮，
+   * 界面上只能干看着——这比"多认几个引号"糟糕得多。
+   * opts.loose === false 时跳过（有些调用方只想要严格结果）。
+   */
+  if (opts.loose === false) return [];
+  return parseLoose(src, opts.defaultRole ?? '');
 }
 
 /* --------------------------------------------------------------- 渲染 */
@@ -208,6 +218,54 @@ export function plainLines(message, protocol) {
  *   阶段三（兜底）：如果有按钮落进了代码块/整页 HTML，拆掉它只留文字。
  */
 
+/**
+ * 宽松解析：正文没有 <tts> 标签时，直接从常见对话格式里认台词。
+ *
+ * 【为什么需要】
+ * 严格模式靠模型写 <tts>角色|情绪|文本</tts>。但模型不一定照着写 ——
+ * 开头几楼、或者换了提示词之后，正文里根本没有标签，于是一句台词都识别
+ * 不出来，界面上连声波按钮都没有，只能干看着。
+ *
+ * 这里退回人类最常写的形式：
+ *   中文引号 / 英文引号 / 直角引号 / 双直角引号 包起来的那句
+ * 说话人从引号前面的「名字：」或「**名字**」推出来，推不出就用默认角色。
+ *
+ * 结果是宽松的（旁白里的引号也可能被当成台词），但这比"一句都识别不出来"
+ * 好得多：多一个按钮至少点得动，漏掉整句话就没法用了。
+ */
+export function parseLoose(text, defaultRole = '') {
+  const src = String(text ?? '');
+  const lines = [];
+  const re = /[\u201C"\u300C\u300E]([^\u201D"\u300D\u300F\n]{1,500})[\u201D"\u300D\u300F]/g;
+
+  let m;
+  while ((m = re.exec(src))) {
+    const body = String(m[1] ?? '').trim();
+    if (body.length < 2) continue;
+
+    const before = src.slice(Math.max(0, m.index - 160), m.index);
+    const speaker =
+      /\*\*([^*\n]{1,16})\*\*[\s\uFF1A:]*$/.exec(before)?.[1]?.trim()
+      || /[\n\u3002\uFF01\uFF1F!?\uFF09)]\s*([^\s\uFF1A:\n\uFF0C\u3002\uFF01\uFF1F!?\u201C\u201D"\u300C\u300D\u300E\u300F]{1,16})\s*[\uFF1A:]\s*$/.exec(before)?.[1]?.trim()
+      || /^\s*([^\s\uFF1A:\n\uFF0C\u3002\uFF01\uFF1F!?\u201C\u201D"\u300C\u300D\u300E\u300F]{1,16})\s*[\uFF1A:]/.exec(before)?.[1]?.trim()
+      || '';
+
+    lines.push({
+      role: speaker || String(defaultRole ?? '').trim() || '\u65C1\u767D',
+      emotion: '',
+      text: body,
+      translation: body,
+      trStart: m.index + 1,
+      trEnd: re.lastIndex - 1,
+      start: m.index,
+      end: re.lastIndex,
+      confidence: 'loose',
+    });
+  }
+
+  return lines;
+}
+
 const MARK_OPEN = '\uE000';   // 标记开始
 const MARK_MID = '\uE001';    // 行号和译文的分界
 const MARK_CLOSE = '\uE002';  // 标记结束
@@ -220,9 +278,9 @@ const stage = new Map();
  * 阶段一：把每句台词换成标记 + 译文。
  * 同时把解析结果存起来，阶段二按行号取。
  */
-export function markLines(message, protocol, { token = '' } = {}) {
+export function markLines(message, protocol, { token = '', defaultRole = '' } = {}) {
   const src = String(message ?? '');
-  const lines = parseLines(src, protocol);
+  const lines = parseLines(src, protocol, { defaultRole });
   if (!lines.length) return src;
 
   stage.set(token, { lines, at: Date.now() });

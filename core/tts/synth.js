@@ -86,11 +86,40 @@ export function buildRequest(engine, line = {}, { language = '' } = {}) {
  * 把响应解成 Blob。
  * 三种现实情况：直接给音频 / 给 base64 / 给一个下载链接。
  */
+/**
+ * 把 HTTP 错误翻译成"下一步该做什么"。
+ *
+ * 光甩一句「语音接口返回 502」用户没法行动：502 通常不是接口本身的问题，
+ * 而是中转服务连不上上游；401 是 key 不对；404 是路径不对。
+ */
+export function describeHttpError(status, bodyText, url) {
+  const body = String(bodyText ?? '').slice(0, 300);
+  const host = (() => { try { return new URL(url).host; } catch { return String(url ?? ''); } })();
+
+  let hint = '';
+  if (status === 401 || status === 403) {
+    hint = '鉴权没通过。Key 可能填错或过期，也可能中转服务没把 Authorization 头转发出去。';
+  } else if (status === 404) {
+    hint = '这个地址上没有接口。检查请求地址的路径（是不是少了 /v1），以及中转服务有没有转发这条路由。';
+  } else if (status === 429) {
+    hint = '请求太频繁或额度用完。等一会儿再试，或去服务商后台查余额。';
+  } else if (status >= 500) {
+    hint = '服务端出错，多半是对外接口或中转服务连不上上游。'
+      + '502/504 常见于反向代理超时、上游域名解析失败。'
+      + '可以先清空中转地址、直连接口试一次，确认是哪一段断的。';
+  } else {
+    hint = '检查接口地址、Key 和请求体。';
+  }
+
+  return `语音接口返回 ${status}（${host}）\n${hint}\n原始响应：${body || '(空)'}`;
+}
+
 export async function parseResponse(res, engine) {
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    const err = new Error(`语音接口返回 ${res.status}${detail ? '：' + detail.slice(0, 160) : ''}`);
+    const err = new Error(describeHttpError(res.status, detail, res.url));
     err.status = res.status;
+    err.body = detail;
     throw err;
   }
 

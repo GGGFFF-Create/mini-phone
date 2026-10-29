@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.12.4';
+const VERSION = '0.13.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -67,7 +67,9 @@ const DEFAULTS = {
 
   // 语音
   voice: {
-    enabled: false,
+    // 默认开。关着时正文里连按钮都不出现，用户会以为没有这个功能；
+    // 开着但没配音色时，点一下会明确提示去配。
+    enabled: true,
     activeEngine: 'openai',
     engines: {},              // 用户改过的引擎配置（没改过的用内置默认）
     voices: {},               // 角色名 → { engine, voice, language }
@@ -654,7 +656,7 @@ function bindRender() {
         const token = tokenOf({ messageId });
         renderTokens.set(messageId, token);
         // 先打隐形标记再交给酒馆渲染 —— 私用区字符不会被 markdown 转义
-        const marked = markLines(text, settings.protocol ?? DEFAULT_PROTOCOL, { token });
+        const marked = markLines(text, settings.protocol ?? DEFAULT_PROTOCOL, { token, defaultRole: currentSpace().name });
         const html = original.call(this, marked, name, isSystem, isUser, messageId, ...rest);
         return withSayAll(buttonsFromMarks(html, { token }));
       } catch (e) {
@@ -733,7 +735,7 @@ function bindRenderStages(fm) {
       try {
         const token = tokenOf(meta);
         renderTokens.set(meta.messageId, token);
-        return markLines(text, proto(), { token });
+        return markLines(text, proto(), { token, defaultRole: currentSpace().name });
       } catch { return text; }
     }, { stage: st.BEFORE_REGEX });
 
