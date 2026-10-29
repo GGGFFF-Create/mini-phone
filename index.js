@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.15.1';
+const VERSION = '0.16.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1745,12 +1745,43 @@ function createBridge() {
         }
       });
 
+      /*
+       * 按角色分组：单角色视图一页一个角色。
+       * 头像和音色状态一起带上，前端不用再跑一趟。
+       */
+      const byRole = new Map();
+      for (const line of out) {
+        let g = byRole.get(line.role);
+        if (!g) {
+          g = {
+            name: line.role,
+            avatar: avatarUrl(line.role),
+            hasVoice: line.hasVoice,
+            lines: [],
+          };
+          byRole.set(line.role, g);
+        }
+        g.lines.push(line);
+        if (line.hasVoice) g.hasVoice = true;
+      }
+
+      /*
+       * 排序：已配音色的在前，其次是台词多的，旁白永远垫底。
+       * 旁白往往句数最多（每一段叙述都算），不压下去的话一进来就是它。
+       */
+      const roles = [...byRole.values()].sort((a, b) => {
+        if (a.name === '旁白') return 1;
+        if (b.name === '旁白') return -1;
+        return (b.hasVoice ? 1 : 0) - (a.hasVoice ? 1 : 0) || b.lines.length - a.lines.length;
+      });
+
       return {
         spaceName: currentSpace().name,
         total: out.length,
         ready: out.filter(x => x.hasVoice).length,
         voiceEnabled: !!settings.voice?.enabled,
         lines: out,
+        roles,
       };
     },
 
