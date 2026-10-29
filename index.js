@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.14.1';
+const VERSION = '0.15.1';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -674,6 +674,34 @@ function withSayAll(html) {
 
 /** 从 DOM 里把这一楼的台词全捞出来，按顺序念 */
 async function sayAllFrom(btn) {
+  /*
+   * 优先用按钮上挂的数据（DOM 注入那条路写的）。
+   * 没有才回退到从 DOM 里收集 .mp-line（渲染钩子那条路写的）。
+   */
+  let fromData = null;
+  try {
+    if (btn.dataset?.lines) fromData = JSON.parse(btn.dataset.lines);
+  } catch { fromData = null; }
+
+  if (Array.isArray(fromData) && fromData.length) {
+    btn.dataset.state = 'loading';
+    btn.textContent = '准备中…';
+    try {
+      if (tts?.busy) tts.stop();
+      await tts.speakAll(fromData);
+      btn.dataset.state = 'done';
+    } catch (e) {
+      btn.dataset.state = 'error';
+      btn.title = String(e?.message ?? e);
+      console.warn('[mini-phone] 念整段失败：', e?.message);
+    } finally {
+      const n = fromData.length;
+      btn.textContent = n > 1 ? `▷ 念整段（${n} 句）` : '▷ 念这句';
+      setTimeout(() => { if (btn.dataset.state === 'done') btn.dataset.state = 'idle'; }, 1200);
+    }
+    return;
+  }
+
   const host = btn.closest('.mes_text') ?? btn.parentElement;
   if (!host) return;
 
@@ -748,6 +776,242 @@ function bindRenderStages(fm) {
     catch { return text; }
   });
   console.info('[mini-phone] 正文渲染：messageFormatter 单阶段');
+}
+
+/* ============================================================
+   DOM 注入：不依赖 messageFormatting 的第三条路
+   
+   为什么要有这条路：
+   酒馆 1.18 只有 ctx.messageFormatting（老接口），谁都包装它。
+   装了另一个手机扩展时，两条包装链会互相覆盖 —— 实际渲染走的是
+   最后包装的那个，前面那条插进去的按钮就被丢了。
+   实测：89 楼里 44 楼有引号，但 0 楼有按钮，解析本身却是好的。
+
+   所以改成"等 DOM 渲染完再动手"：
+   监听 #chat 的变化，对每条消息用原文解析，再把按钮插到对应译文后面。
+   不管谁包装了 messageFormatting，都不影响这条路。
+   ============================================================ */
+
+let domObserver = null;
+
+/** 造一个声波按钮（DOM 版，和 buttonsFromMarks 生成的等价） */
+function domPlayButton(line) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mp-play';
+  btn.dataset.act = 'say';
+  btn.dataset.role = line.role ?? '';
+  btn.dataset.emotion = line.emotion ?? '';
+  btn.dataset.text = line.text ?? '';
+  btn.dataset.conf = line.confidence ?? '';
+  btn.setAttribute('aria-label', '朗读这句台词');
+  btn.dataset.state = 'idle';
+  btn.innerHTML = '<i></i><i></i><i></i>';
+  return btn;
+}
+
+/**
+ * 造「念整段」按钮，把这一楼的台词数据直接挂在按钮上。
+ *
+ * 为什么不把按钮插到每一句台词后面：DOM 里的文本被酒馆正则改写过，
+ * 实测「扫码激活一下校园终端」在 DOM 里并不连续（前 12/10/8/6 字都匹配不上，
+ * 只有前 4 字能命中）。按译文定位不可靠，插错位置比不插更糟。
+ *
+ * 所以退一步：每楼末尾一个按钮，点了整楼连着念。数据从原文解析出来，
+ * 不依赖 DOM 长什么样。
+ */
+function domSayAllButton(lines) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'mp-sayall';
+  btn.dataset.sayAll = '1';
+  btn.dataset.state = 'idle';
+  const n = Array.isArray(lines) ? lines.length : 0;
+  btn.textContent = n > 1 ? `▷ 念整段（${n} 句）` : '▷ 念这句';
+  try {
+    btn.dataset.lines = JSON.stringify((lines ?? []).map(l => ({
+      role: l.role ?? '',
+      emotion: l.emotion ?? '',
+      text: l.text ?? '',
+      translation: l.translation ?? '',
+    })));
+  } catch { /* 数据太大就不挂，点击时再从原文解析 */ }
+  return btn;
+}
+
+/**
+ * 在 box 里找到 needle 这段文字，把按钮插到它后面。
+ * needle 太长容易被 markdown 拆断，只比前 12 个字。
+ */
+function insertButtonAfterText(box, line) {
+  const full = String(line.translation ?? '').trim();
+  if (full.length < 2) return false;
+  const needle = full.slice(0, 12);
+
+  const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, null);
+  let node;
+  while ((node = walker.nextNode())) {
+    const value = node.nodeValue ?? '';
+    const idx = value.indexOf(needle);
+    if (idx < 0) continue;
+
+    try {
+      const after = node.splitText(idx + needle.length);
+      after.parentNode.insertBefore(domPlayButton(line), after);
+      return true;
+    } catch { return false; }
+  }
+  return false;
+}
+
+/** 处理一条消息：解析原文，给每句台词插按钮 */
+function decorateMessage(mesEl) {
+  if (!active) return;
+
+  const box = mesEl.querySelector('.mes_text');
+  if (!box) return;
+
+  /*
+   * 不用 data-mp-done 做门禁用。
+   *
+   * 酒馆在消息渲染完之后还会重置 .mes_text 的内容（正则、折叠、其他扩展），
+   * 我们插进去的按钮会被一起清掉，但外层 .mes 上的标记还留着 ——
+   * 于是这楼永远被判定"处理过了"，再也不会补。
+   * 实测 16 个 AI 楼全是 done=1 但按钮为 0。
+   *
+   * 改成直接看按钮在不在：在就跳过，不在就补。
+   */
+  if (box.querySelector('.mp-sayall')) return;
+  if (box.querySelector('.mp-play')) return;   // 渲染钩子那条路插过了
+
+  const mesId = Number(mesEl.getAttribute('mesid'));
+  const chat = context()?.chat;
+  const m = Number.isFinite(mesId) ? chat?.[mesId] : null;
+  if (!m || m.is_user || m.is_system || typeof m.mes !== 'string') return;
+  if (!m.mes.trim()) return;
+
+  let lines = [];
+  try { lines = parseLines(m.mes, settings.protocol ?? DEFAULT_PROTOCOL, { defaultRole: '' }); }
+  catch { return; }
+  if (!lines.length) return;
+
+  try {
+    box.append(domSayAllButton(lines));
+  } catch { /* 插入失败就算，不打断正文 */ }
+}
+
+/** 扫一遍现有消息（打开聊天时补历史楼层） */
+function decorateAll() {
+  if (!active) return;
+  const chatEl = document.getElementById('chat');
+  if (!chatEl) return;
+  for (const mesEl of chatEl.querySelectorAll('.mes')) decorateMessage(mesEl);
+}
+
+function bindDomInject() {
+  if (domObserver) return;
+  const chatEl = document.getElementById('chat');
+  if (!chatEl) { setTimeout(bindDomInject, 600); return; }
+
+  domObserver = new MutationObserver((records) => {
+    for (const rec of records) {
+      for (const node of rec.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.classList?.contains('mes')) decorateMessage(node);
+        else if (node.querySelectorAll) node.querySelectorAll('.mes').forEach(decorateMessage);
+      }
+      // 同一条消息内容被重写时（酒馆重新渲染），也补一次
+      if (rec.type === 'childList' && rec.target?.closest?.('.mes')) {
+        decorateMessage(rec.target.closest('.mes'));
+      }
+    }
+  });
+
+  domObserver.observe(chatEl, { childList: true, subtree: true });
+
+  /*
+   * 历史楼是分批渲染的 —— 400ms 时往往只出来第一楼。
+   * 隔一段时间补几次，覆盖加载慢的情况。
+   */
+  for (const delay of [400, 1200, 2500, 5000, 9000]) {
+    setTimeout(decorateAll, delay);
+  }
+  console.info('[mini-phone] 正文按钮：DOM 注入已启动');
+}
+
+function unbindDomInject() {
+  domObserver?.disconnect();
+  domObserver = null;
+  for (const el of document.querySelectorAll('.mp-play, .mp-sayall')) el.remove();
+  for (const el of document.querySelectorAll('[data-mp-done]')) el.removeAttribute('data-mp-done');
+}
+
+/* ============================================================
+   抢占 messageFormatting 包装
+
+   酒馆 1.18 只有 ctx.messageFormatting（老接口），装了另一个手机扩展时
+   两边都会包装它。后包装的那个成为最外层，前面那条插进去的按钮就丢了 ——
+   实测 89 楼里 44 楼有台词，0 楼有按钮。
+
+   办法：定时检查 ctx.messageFormatting 还是不是"我的"。不是就重新包一层，
+   把自己顶到最外层。多包几层不影响正确性（每层都只在没按钮时插），
+   但能保证最后一道是咱们的。
+   ============================================================ */
+
+let wrapCheckTimer = null;
+
+function isMine(fn) {
+  return typeof fn === 'function' && fn.__mpWrapped === true;
+}
+
+/** 把包装重新顶到最外层 */
+function ensureFormattingWrapped() {
+  if (!active) return false;
+  const ctx = context();
+  const current = ctx?.messageFormatting;
+  if (typeof current !== 'function') return false;
+  if (isMine(current)) return false;
+
+  const prev = current;
+  const wrapped = function (text, name, isSystem, isUser, messageId, ...rest) {
+    if (!active) return prev.call(this, text, name, isSystem, isUser, messageId, ...rest);
+    if (isSystem || isUser) return prev.call(this, text, name, isSystem, isUser, messageId, ...rest);
+
+    try {
+      const token = tokenOf({ messageId });
+      renderTokens.set(messageId, token);
+      const marked = markLines(String(text ?? ''), settings.protocol ?? DEFAULT_PROTOCOL, { token, defaultRole: '' });
+      const html = prev.call(this, marked, name, isSystem, isUser, messageId, ...rest);
+      return withSayAll(buttonsFromMarks(html, { token }));
+    } catch (e) {
+      console.warn('[mini-phone] 渲染降级：', e?.message);
+      return prev.call(this, text, name, isSystem, isUser, messageId, ...rest);
+    }
+  };
+
+  wrapped.__mpWrapped = true;
+  try {
+    ctx.messageFormatting = wrapped;
+    legacyFormatting = prev;      // disable 时还原到"我们之前的那层"
+    console.info('[mini-phone] 重新抢占正文渲染包装');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startWrapWatch() {
+  if (wrapCheckTimer) return;
+  // 5 秒一次，代价很小；只在被覆盖时真的做事
+  wrapCheckTimer = setInterval(() => {
+    if (!active) return;
+    ensureFormattingWrapped();
+  }, 5000);
+}
+
+function stopWrapWatch() {
+  if (wrapCheckTimer) clearInterval(wrapCheckTimer);
+  wrapCheckTimer = null;
 }
 
 /** 点击正文里的声波 */
@@ -857,6 +1121,9 @@ function bindEvents() {
       // ③ 重算并推给界面
       refreshRoster();
       bridge?.post('space', spaceInfo());
+
+      // 换卡后历史楼要重新补按钮
+      for (const delay of [300, 900, 2000]) setTimeout(decorateAll, delay);
     } catch (e) {
       // 这里以前是空 catch —— 出错就静默，界面上看不出任何异常。
       // 换成能看见的日志，出问题时有线索。
@@ -2069,6 +2336,9 @@ export async function enable() {
   mountEntry();
   bindEvents();
   bindRender();
+  bindDomInject();
+  startWrapWatch();
+  setTimeout(ensureFormattingWrapped, 1200);
   installDebug();
   inject();
 
@@ -2094,6 +2364,9 @@ export async function disable() {
   document.removeEventListener('click', onClickWave, true);
 
   // 老版酒馆：把被包装的渲染函数还回去
+  unbindDomInject();
+  stopWrapWatch();
+
   if (legacyFormatting) {
     try { const c = context(); if (c) c.messageFormatting = legacyFormatting; } catch { /* 忽略 */ }
     legacyFormatting = null;
