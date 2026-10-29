@@ -813,6 +813,8 @@ export async function mount(root, ctx) {
 
     /* 角色音色 */
     section('每个角色的声音');
+    cur.append(el('p', 'settings-note',
+      '这里的改动和桌面「角色」页是同一份数据。想看卡片式管理、改头像，请到「角色」页。'));
 
     // 这一块会整段重建：换角色卡时宿主会推 space 事件，外壳调 refresh()
     const voiceSection = el('div', 'voice-section');

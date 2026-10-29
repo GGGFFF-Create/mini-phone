@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.11.3';
+const VERSION = '0.12.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1213,6 +1213,91 @@ function createBridge() {
       saveSettings();
       bridge?.post('space', spaceInfo());
       return { name: n, avatar: avatarUrl(n), isCustom: false };
+    },
+
+    /* --- 角色（音色管理）--- */
+
+    /**
+     * 当前卡的角色清单，带音色配置。
+     * 「角色」App 的卡片网格用它。
+     */
+    roles: (source) => {
+      guard(source);
+      refreshRoster();
+      const space = currentSpace();
+      const engines = tts?.engines?.() ?? {};
+
+      const list = (roster?.list ?? []).map((c, i) => {
+        const bind = settings.voice?.voices?.[c.name] ?? null;
+        const engineId = bind?.engine || settings.voice?.activeEngine || '';
+        const eng = engines[engineId] ?? null;
+        const line = { role: c.name, text: '', emotion: '' };
+        return {
+          no: i + 1,
+          name: c.name,
+          avatar: avatarUrl(c.name),
+          source: c.source ?? '',
+          engineId,
+          engineName: eng?.name ?? '',
+          engineKind: eng?.kind ?? '',
+          voice: bind?.voice ?? '',
+          language: bind?.language ?? '',
+          hasVoice: !!String(bind?.voice ?? '').trim(),
+          ready: !!tts?.readyFor?.(line)?.ok,
+        };
+      });
+
+      return {
+        spaceName: space.name,
+        hasSpace: space.key !== 'global',
+        activeEngine: settings.voice?.activeEngine ?? '',
+        list,
+      };
+    },
+
+    /** 酒馆里所有角色卡的名字（添加角色时给下拉用） */
+    characterNames: (source) => {
+      guard(source);
+      const seen = new Set();
+      for (const c of context()?.characters ?? []) {
+        const n = String(c?.name ?? '').trim();
+        if (n) seen.add(n);
+      }
+      return [...seen];
+    },
+
+    /** 手动加一个角色到当前卡 */
+    roleAdd: (source, name) => {
+      guard(source);
+      const n = String(name ?? '').trim();
+      if (!n) throw new Error('角色名不能为空');
+      if (n === context()?.name1) throw new Error('不能用主角自己的名字');
+      tagRoles([n]);
+      refreshRoster();
+      return true;
+    },
+
+    /** 从当前卡移除一个角色（连带它的音色绑定） */
+    roleRemove: (source, name) => {
+      guard(source);
+      const n = String(name ?? '').trim();
+      const space = currentSpace();
+
+      const list = settings.seenRoles ?? [];
+      for (const r of list) {
+        if (r?.name !== n) continue;
+        r.cards = (r.cards ?? []).filter(k => k !== space.key);
+      }
+      settings.seenRoles = list.filter(r => (r.cards ?? []).length > 0);
+
+      // 音色绑定和头像一起清掉，不然会留下孤儿数据
+      if (settings.voice?.voices) delete settings.voice.voices[n];
+      if (settings.avatars) delete settings.avatars[n];
+
+      saveSettings();
+      refreshRoster();
+      bridge?.post('space', spaceInfo());
+      return true;
     },
 
     /** 哪些人用着自定义头像（设置页显示"恢复默认"用） */
