@@ -40,7 +40,18 @@ export function applyProxy(url, proxy) {
 }
 
 export function buildRequest(engine, line = {}, { language = '' } = {}) {
-  const { text, used } = applyEmotion(line.text ?? '', line.emotion ?? '', engine);
+  /*
+   * 念哪一段？
+   *
+   * 优先译文。翻译卡的正文是「中文译文 + 日文原文」，玩家看的是中文，
+   * 听的自然也该是中文 —— 念原文会变成"屏幕上中文、耳机里日语"。
+   * 没有译文时才用原文（纯中文卡两者通常相同）。
+   *
+   * 注意：以前这里写的是 line.text（原文），而浏览器朗读那条路用的是
+   * translation —— 两条路径不一致，同一句话换引擎就换语言。
+   */
+  const rawSpeak = String(line.translation ?? '').trim() || String(line.text ?? '');
+  const { text, used } = applyEmotion(rawSpeak, line.emotion ?? '', engine);
 
   // 语速：引擎上配一个倍率，模板里能用 {{speed}}。
   // 浏览器朗读引擎直接拿它当 utterance.rate。
@@ -53,7 +64,9 @@ export function buildRequest(engine, line = {}, { language = '' } = {}) {
     model: engine.model ?? '',
     voice: line.voice || engine.voice || '',
     text,
-    rawText: String(line.text ?? ''),
+    speakText: text,                        // 明确语义：要念的那段
+    rawText: String(line.text ?? ''),       // 原文，模板里想用还能用
+    translation: String(line.translation ?? ''),
     emotion: used,
     language: line.language || language || '',
     speed,
