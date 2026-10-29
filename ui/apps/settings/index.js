@@ -720,8 +720,38 @@ export async function mount(root, ctx) {
       const testRow = el('div', 'field field-row');
       const tBtn = el('button', 'pill-btn', '测试这个引擎');
       tBtn.type = 'button';
+
+      /* 通了当然好；不通的时候，直接看发出去的请求长什么样 */
+      const pBtn = el('button', 'pill-btn', '查看请求');
+      pBtn.type = 'button';
+
       const tOut = el('span', 'field-hint', '');
-      testRow.append(tBtn, tOut);
+      testRow.append(tBtn, pBtn, tOut);
+
+      const reqBox = el('pre', 'req-preview hidden');
+      editor.append(testRow, reqBox);
+
+      pBtn.addEventListener('click', async () => {
+        try {
+          const r = await api.voicePreviewRequest(eng.id);
+          reqBox.classList.remove('hidden');
+          reqBox.textContent = r.error
+            ? `拼不出请求：${r.error}`
+            : [
+              `${r.method || 'POST'} ${r.url}`,
+              '',
+              '请求头：',
+              ...Object.entries(r.headers ?? {}).map(([k, v]) => `  ${k}: ${v}`),
+              '',
+              '请求体：',
+              r.body || '（GET 不带请求体）',
+            ].join('\n');
+        } catch (e) {
+          reqBox.classList.remove('hidden');
+          reqBox.textContent = `出错：${e?.message ?? e}`;
+        }
+      });
+
       tBtn.addEventListener('click', async () => {
         tBtn.disabled = true;
         tOut.textContent = '测试中…';
@@ -734,7 +764,6 @@ export async function mount(root, ctx) {
           tOut.textContent = `出错：${e?.message ?? e}`;
         } finally { tBtn.disabled = false; }
       });
-      editor.append(testRow);
 
       /* 删除 / 恢复 */
       const actionRow = el('div', 'field field-row');

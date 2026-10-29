@@ -39,9 +39,34 @@ export function createTTS({ getSettings, emit = () => {}, indexedDB } = {}) {
   function engineTable() {
     const saved = getSettings()?.engines ?? {};
     const table = {};
+
+    /*
+     * 合并用户配置时跳过"空对象"。
+     *
+     * 老版本有个 bug：第一次改内置引擎的任意字段时，会把 body / headers
+     * 存成 {}。之后再合并 {...模板, ...用户的 {}}，请求头和请求体就整片
+     * 没了，症状是"只改了接口地址，测试却报请求体里没有 {{text}}"。
+     *
+     * 已经写坏的数据没法让人手动重填（他们也不知道原来长什么样），
+     * 所以这里把空对象当作"没存过"，用模板补回来。
+     */
+    const merge = (base, user) => {
+      const out = { ...base };
+      for (const [k, v] of Object.entries(user ?? {})) {
+        if (v === undefined || v === null) continue;
+        const isEmptyObj = typeof v === 'object' && !Array.isArray(v)
+          && Object.keys(v).length === 0;
+        const baseHasObj = base?.[k] && typeof base[k] === 'object';
+        if (isEmptyObj && baseHasObj) continue;
+        out[k] = v;
+      }
+      return out;
+    };
+
     for (const builtin of BUILTIN_ENGINES) {
-      table[builtin.id] = createEngine({ ...builtin, ...(saved[builtin.id] ?? {}) });
+      table[builtin.id] = createEngine({ ...merge(builtin, saved[builtin.id]), id: builtin.id });
     }
+
     // 用户自己加的
     for (const [id, cfg] of Object.entries(saved)) {
       if (!table[id]) table[id] = createEngine({ ...cfg, id });
@@ -194,6 +219,55 @@ export function createTTS({ getSettings, emit = () => {}, indexedDB } = {}) {
         return { ok: true, ms: Date.now() - started, bytes: blob.size };
       } catch (e) {
         return { ok: false, ms: Date.now() - started, error: e?.message ?? String(e) };
+      }
+    },
+
+    /**
+     * 看看实际会发出去什么请求（不发送）。
+     *
+     * 排查配置问题最有用的一步：不通的时候能一眼看出是地址不对、
+     * key 没带、还是请求体里没塞文本。key 一律打码，别截图泄露。
+     */
+    previewRequest(engineId, line = {}) {
+      const id = engineId || getSettings()?.activeEngine;
+      const eng = engineTable()[id];
+      if (!eng) return { error: '没有这个引擎' };
+
+      if (eng.kind === 'browser') {
+        return { browser: true, text: String(line.text ?? '你好') };
+      }
+
+      try {
+        const voice = line.voice || eng.voice || '';
+        const { url, init, vars, emotionUsed } = buildRequest(eng, {
+          ...line,
+          voice,
+          language: line.language || '',
+        });
+
+        const mask = (v) => {
+          const str = String(v ?? '');
+          if (!str) return '';
+          if (str.length <= 8) return '****';
+          return str.slice(0, 4) + '…' + str.slice(-4) + '（已打码，共 ' + str.length + ' 字符）';
+        };
+
+        const headers = {};
+        for (const [k, v] of Object.entries(init.headers ?? {})) {
+          headers[k] = /authorization|api[-_]?key|x-api-key/i.test(k) ? mask(v) : String(v);
+        }
+
+        return {
+          url,
+          method: init.method || 'POST',
+          headers,
+          body: init.body ?? '',
+          emotionUsed,
+          voice,
+          problems: validateEngine(eng),
+        };
+      } catch (e) {
+        return { error: e?.message ?? String(e) };
       }
     },
 

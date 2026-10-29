@@ -1440,6 +1440,23 @@ html, body {
 }
 .voice-preview:disabled { opacity: .7; }
 
+/* 请求预览框 */
+.req-preview {
+  margin: 0 16px 12px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: 11.5px/1.6 ui-monospace, 'SF Mono', Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 260px;
+  overflow: auto;
+  user-select: text;
+}
+.req-preview.hidden { display: none; }
+
 /* 语速滑条 */
 .speed-row {
   display: flex;

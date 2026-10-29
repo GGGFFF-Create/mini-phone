@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.11.1';
+const VERSION = '0.11.3';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1426,9 +1426,24 @@ function createBridge() {
     voiceEngineSave: (source, id, cfg) => {
       guard(source);
       if (!id) throw new Error('缺引擎 id');
+
+      /*
+       * 用什么当底？
+       *
+       * 以前用 settings.voice.engines[id] —— 第一次改某个字段时它还不存在，
+       * 于是 createEngine() 用空白默认值建了一条，body / headers 都是 {}。
+       * 之后再读，合并顺序是 {...内置模板, ...这条空白的}，就把内置的
+       * 请求头和请求体整体覆盖成空了。表现就是"只改了接口地址，结果
+       * 测试报请求体没有 {{text}}"。
+       *
+       * 现在用"当前生效的完整配置"作底：已经算上内置模板的默认值，
+       * 改哪个字段就只动哪个字段。
+       */
+      const current = tts.engines()?.[id] ?? templateOf(id) ?? createEngine({ id });
+
       settings.voice.engines = {
         ...(settings.voice.engines ?? {}),
-        [id]: createEngine({ ...(settings.voice.engines?.[id] ?? {}), ...cfg, id }),
+        [id]: createEngine({ ...current, ...cfg, id }),
       };
       saveSettings();
       return tts.engines()[id];
@@ -1477,6 +1492,12 @@ function createBridge() {
     },
 
     voiceTest: (source, id) => { guard(source); return tts.test(id); },
+
+    /** 看实际会发出去的请求（不发送）。排配置问题最直接的一步。 */
+    voicePreviewRequest: (source, id, text) => {
+      guard(source);
+      return tts.previewRequest(id, { text: String(text ?? '') || '你好', role: '测试', emotion: '' });
+    },
 
     /** 给角色配声 */
     voiceBind: (source, role, binding) => {

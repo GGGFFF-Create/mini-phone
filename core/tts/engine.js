@@ -271,8 +271,47 @@ export function validateEngine(engine) {
   if (engine.response === 'json-base64' || engine.response === 'json-url') {
     if (!engine.responsePath) problems.push('响应类型选了 JSON，但没填「取哪个字段」');
   }
-  if (!String(engine.body?.input ?? engine.body?.text ?? '').includes('{{text}}')) {
-    problems.push('请求体里没有 {{text}} —— 引擎不知道该念什么');
+  /*
+   * 找 {{text}} 必须递归找整个请求体。
+   *
+   * 以前只查 body.input / body.text 两个固定字段名 —— 但各家的字段名
+   * 五花八门（text / input / content / utterances[0].text /
+   * voice_setting 里的嵌套…），换个服务商就误报"没有 {{text}}"，
+   * 明明配对了也跑不下去。
+   */
+  const bodyEmpty = !engine.body
+    || (typeof engine.body === 'object' && Object.keys(engine.body).length === 0);
+
+  if (bodyEmpty) {
+    problems.push('请求体是空的 —— 至少要有一个带 {{text}} 的字段。可点「恢复默认值」补回模板');
+  } else if (!bodyUsesText(engine.body) && !String(engine.endpoint ?? '').includes('{{text}}')) {
+    problems.push('请求体里找不到 {{text}} —— 请在某个字段里写 {{text}}，引擎才知道要念什么');
   }
+
+  // 请求头为空不阻止保存（本地服务常常不要鉴权），但远程服务多半会 401
+  if (!engine.headers || Object.keys(engine.headers).length === 0) {
+    if (/^https:\/\//i.test(String(engine.endpoint || engine.base || ''))) {
+      problems.push('请求头是空的 —— 远程接口通常需要 Authorization，否则会返回 401。可点「恢复默认值」');
+    }
+  }
+
   return problems;
+}
+
+/** 请求体里（任意深度）有没有引用 {{text}}；GET 把文本放 URL 也算 */
+export function bodyUsesText(body) {
+  const seen = new Set();
+
+  const walk = (node) => {
+    if (typeof node === 'string') return node.includes('{{text}}');
+    if (Array.isArray(node)) return node.some(walk);
+    if (node && typeof node === 'object') {
+      if (seen.has(node)) return false;
+      seen.add(node);
+      return Object.values(node).some(walk);
+    }
+    return false;
+  };
+
+  return walk(body);
 }
