@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.12.0';
+const VERSION = '0.12.1';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -152,9 +152,19 @@ function currentSpace() {
       return { key: `group:${gid}`, name: g?.name || '群聊', type: 'group', members: (g?.members ?? []).map(a => ctx?.characters?.find(c => c?.avatar === a)?.name).filter(Boolean) };
     }
     const ch = ctx?.characters?.[ctx?.characterId];
-    return ch?.avatar
-      ? { key: `card:${ch.avatar}`, name: ch.name || '', type: 'card', members: [ch.name].filter(Boolean) }
-      : { key: 'global', name: '', type: 'card', members: [] };
+    if (!ch?.avatar) return { key: 'global', name: '', type: 'card', members: [] };
+
+    /*
+     * 单张角色卡：members 留空。
+     *
+     * 为什么不塞 ch.name —— 卡名不等于角色名。一张大卡可能叫「圣樱学院」
+     * 或「LV99勇者回收计划」，里面是一群学生、勇者在对话。
+     * 把卡名当成一个"角色"塞进聊天对象和音色列表，会显得很怪。
+     *
+     * 真正的角色名从正文里提取（台词标签里的说话人），见 scanSpeakers。
+     * 一个都没提取到时，buildRoster 才用卡名兜底。
+     */
+    return { key: `card:${ch.avatar}`, name: ch.name || '', type: 'card', members: [] };
   } catch { return { key: 'global', name: '', type: 'card', members: [] }; }
 }
 
@@ -205,19 +215,53 @@ function buildRoster() {
     merged.set(n, { ...(merged.get(n) ?? {}), ...c, name: n, source: merged.get(n)?.source ?? 'manual' });
   }
 
-  // ③ 剧情里说过话的
+  // ③ 剧情里说过话的（老数据里可能存过模板残留，这里再筛一遍）
   for (const r of settings.seenRoles ?? []) {
     const n = String(r?.name ?? '').trim();
     if (!n || n === ctx?.name1) continue;
+    if (!looksLikeName(n)) continue;
     if (!Array.isArray(r.cards) || !r.cards.includes(space.key)) continue;
     if (!merged.has(n)) merged.set(n, { name: n, aliases: r.aliases ?? [], source: 'story', ...cardOf(n) });
   }
 
-  // ④ 手动配过音色的人，即使在当前卡没出现过，也要留着 —— 不然用户会以为配置丢了
+  /*
+   * ④ 配过音色、但正文里还没出现的人。
+   *
+   * 只保留"确实属于当前卡"的（seenRoles 里标记了这张卡）。
+   * 以前是无条件保留，结果 A 卡配过音色的角色会跑到 B 卡的角色列表里。
+   */
   for (const n of Object.keys(settings.voice?.voices ?? {})) {
-    if (!merged.has(n) && n !== ctx?.name1) {
-      merged.set(n, { name: n, aliases: [], source: 'voice', ...cardOf(n) });
-    }
+    if (merged.has(n) || n === ctx?.name1) continue;
+    const tagged = (settings.seenRoles ?? []).some(r =>
+      r?.name === n && Array.isArray(r.cards) && r.cards.includes(space.key));
+    if (!tagged) continue;
+    merged.set(n, { name: n, aliases: [], source: 'voice', ...cardOf(n) });
+  }
+
+  /*
+   * 卡名不是角色名。
+   *
+   * 老版本会把 ctx.name2 直接塞进成员，于是「圣樱学院」这种大卡名
+   * 变成了一个"角色"。现在只要正文里提取到了别的说话人，就把卡名摘掉；
+   * 一个都没提取到时才保留它当兜底。
+   */
+  if (space.type === 'card' && space.name) {
+    const entry = merged.get(space.name);
+    /*
+     * source === 'story' 说明这个名字在正文里作为说话人出现过，
+     * 那它就是真角色 —— 有些卡的名字本身就是主角名字（比如 Seraphina）。
+     * 只有当它纯粹是"卡名"（source 是 card）而又有别人在场时，才摘掉。
+     */
+    const saidInStory = entry?.source === 'story';
+    const others = [...merged.keys()].filter(k => k !== space.name);
+    if (others.length && !saidInStory) merged.delete(space.name);
+  }
+
+  /*
+   * 兜底：一个人都没有的时候，才用卡名。
+   */
+  if (!merged.size && space.type === 'card' && space.name) {
+    merged.set(space.name, { name: space.name, aliases: [], source: 'card', ...cardOf(space.name) });
   }
 
   return createRoster([...merged.values()]);
@@ -227,9 +271,24 @@ function buildRoster() {
  * 把在正文里说过话的人登记到当前卡名下。
  * 全局一份表，每条带 cards 标记 —— 换卡不会丢，换回来还在。
  */
+/**
+ * 像不像一个角色名。
+ *
+ * 正文里难免混进模板残留（{キャラ}、{{user}}）、占位符、换行碎片。
+ * 这些不该变成聊天对象和音色条目。
+ */
+function looksLikeName(raw) {
+  const n = String(raw ?? '').trim();
+  if (!n || n.length > 30) return false;
+  if (/[{}$<>`\\]/.test(n)) return false;        // 模板标记
+  if (/[\r\n\t]/.test(n)) return false;            // 换行碎片
+  if (!/[\p{L}\p{N}]/u.test(n)) return false;      // 至少一个字母或数字
+  return true;
+}
+
 function tagRoles(names, key = currentSpace().key) {
   if (!active || !key) return false;
-  const want = [...new Set((names ?? []).map(n => String(n ?? '').trim()).filter(Boolean))];
+  const want = [...new Set((names ?? []).map(n => String(n ?? '').trim()).filter(looksLikeName))];
   if (!want.length) return false;
 
   const me = context()?.name1 || '';
@@ -286,21 +345,71 @@ function scanSpeakers(messages) {
   const names = new Set();
   const proto = settings.protocol ?? DEFAULT_PROTOCOL;
 
+  /*
+   * 第一优先：台词标签里的说话人。
+   *
+   * 正文写的是 「译文」<tts>角色|情绪|文本</tts>，role 才是真正的角色名。
+   * 一张大卡里可能同时有五六个人在说话，这里能全捞出来。
+   */
   for (const m of messages ?? []) {
     if (!m || m.is_user || m.is_system) continue;
-    if (typeof m.mes === 'string') {
-      for (const line of parseLines(m.mes, proto)) {
-        if (line.role && line.role !== me) names.add(line.role);
-      }
+    if (typeof m.mes !== 'string') continue;
+    for (const line of parseLines(m.mes, proto)) {
+      if (line.role && line.role !== me) names.add(line.role);
     }
-    // 消息本身的说话人（群聊里每条都带；单卡就是角色名）
-    const who = String(m.name ?? '').trim();
-    if (who && who !== me && !/^sillytavern\s+system$/i.test(who) && !/^system$/i.test(who)) {
-      names.add(who);
+  }
+
+  /*
+   * 兜底：一句台词标签都没有时，才用消息的说话人。
+   *
+   * 单卡聊天里 m.name 就是卡名 —— 卡名不等于角色名，所以不能无条件采用。
+   * 只有整段历史完全没写台词（纯旁白、或者用户在别的格式写），
+   * 才退回到它，至少能有个名字可用。
+   */
+  if (!names.size) {
+    for (const m of messages ?? []) {
+      if (!m || m.is_user || m.is_system) continue;
+      const who = String(m.name ?? '').trim();
+      if (who && who !== me && !/^sillytavern\s+system$/i.test(who) && !/^system$/i.test(who)) {
+        names.add(who);
+      }
     }
   }
 
   return names.size ? tagRoles([...names]) : false;
+}
+
+/**
+ * 清掉把"卡名"当成角色的旧数据。
+ *
+ * 老版本会把 ctx.name2 直接登记成成员，于是「圣樱学院」这种大卡名
+ * 被存进了 seenRoles。现在规则改了，但历史数据还留着。
+ *
+ * 判断标准：这个名字在正文里到底有没有作为说话人出现过。
+ *   - 出现过 → 真角色（有些卡的主角名字就等于卡名），保留
+ *   - 没出现过 → 是卡名，把这张卡的标记摘掉
+ */
+function pruneCardNames() {
+  const ctx = context();
+  const space = currentSpace();
+  if (space.type !== 'card' || !space.name) return false;
+
+  const list = settings.seenRoles ?? [];
+  const entry = list.find(r => r?.name === space.name && (r.cards ?? []).includes(space.key));
+  if (!entry) return false;
+
+  const proto = settings.protocol ?? DEFAULT_PROTOCOL;
+  const said = (ctx?.chat ?? []).slice(-200).some((m) => {
+    if (!m || m.is_user || typeof m.mes !== 'string') return false;
+    try { return parseLines(m.mes, proto).some(l => l.role === space.name); }
+    catch { return false; }
+  });
+  if (said) return false;
+
+  entry.cards = (entry.cards ?? []).filter(k => k !== space.key);
+  settings.seenRoles = list.filter(r => (r.cards ?? []).length > 0);
+  saveSettings();
+  return true;
 }
 
 /** 重算名册并同步给界面 */
@@ -733,8 +842,9 @@ function bindEvents() {
       floorCount = 0;
 
       // ① 当前卡的成员先登记（群聊成员、单卡角色名）
-      tagRoles(currentSpace().members);
-      // ② 再扫历史：打开一张早就在聊的卡时，那些楼不会再触发渲染事件
+      // ② 先清掉旧版本把卡名当角色的脏数据
+      pruneCardNames();
+      // ③ 再扫历史：打开一张早就在聊的卡时，那些楼不会再触发渲染事件
       scanSpeakers((context()?.chat ?? []).slice(-200));
       // ③ 重算并推给界面
       refreshRoster();
@@ -1811,7 +1921,7 @@ export async function enable() {
 
   // 刷新页面后不换卡也要有数据：扫一遍现有历史，把说过话的人登记上
   try {
-    tagRoles(currentSpace().members);
+    pruneCardNames();
     scanSpeakers((context()?.chat ?? []).slice(-200));
     refreshRoster();
   } catch (e) { console.warn('[mini-phone] 初始扫历史失败：', e?.message); }
