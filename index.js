@@ -29,7 +29,7 @@ const BASE = new URL('.', import.meta.url);
  * 重新拉 ui/*.js。不然用户点了"更新"、刷新页面，看到的还是旧界面，然后来问
  * 你"为什么没变"。
  */
-const VERSION = '0.16.1';
+const VERSION = '0.17.0';
 
 /** 默认设置。改结构时同步加 version，迁移在 normalize() 里做。 */
 const DEFAULTS = {
@@ -1903,7 +1903,17 @@ function createBridge() {
       guard(source);
       rebuildClient();
       if (!client?.config?.url) throw new Error('还没配置模型接口（设置 → 模型）');
-      return chatSvc.send(threadId, text);
+
+      /*
+       * 流式：模型每吐一小段就推给界面，让回复慢慢长出来，
+       * 不用等整段生成完。不支持流式的接口会在 core/llm.js 里
+       * 自动退回整段返回，这里不需要额外判断。
+       */
+      return chatSvc.send(threadId, text, {
+        onDelta: (delta, whole) => {
+          try { bridge?.post('delta', { threadId, delta, whole }); } catch { /* 界面没接就算了 */ }
+        },
+      });
     },
 
     ensureThread: (source, opts) => { guard(source); return chatSvc.ensureThread(opts); },

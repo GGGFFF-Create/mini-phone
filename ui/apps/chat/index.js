@@ -178,6 +178,8 @@ export async function mount(root, ctx) {
   let query = '';
   let typing = false;
   let sending = false;
+  /** 流式中的临时内容：{ threadId, text } */
+  let streaming = null;
 
   /* ------------------------------------------------------- 骨架 */
 
@@ -479,6 +481,7 @@ export async function mount(root, ctx) {
 
   async function openThread(id) {
     try {
+      streaming = null;
       active = await api.thread(id);
       if (!active) throw new Error('会话不存在');
       await api.markRead(id);
@@ -496,6 +499,7 @@ export async function mount(root, ctx) {
   function closeThread() {
     active = null;
     typing = false;
+    streaming = null;
     nav.classList.remove('hidden');
     searchRow.classList.remove('hidden');
     wrap.querySelector('.chat-head')?.classList.remove('hidden');
@@ -531,10 +535,21 @@ export async function mount(root, ctx) {
       scroll.append(row);
     }
 
-    if (typing) {
+    /*
+     * 回复进行中：
+     *   有流式增量 → 直接把正在生成的文字显示出来（末尾带光标）
+     *   还没吐字   → 显示三个点
+     */
+    const live = streaming && streaming.threadId === active.id ? String(streaming.text ?? '') : '';
+    if (typing || live) {
       const row = el('div', 'bubble-row theirs');
-      const b = el('div', 'bubble theirs typing');
-      b.append(el('i', 'dot'), el('i', 'dot'), el('i', 'dot'));
+      const b = el('div', live ? 'bubble theirs streaming' : 'bubble theirs typing');
+      if (live) {
+        b.append(el('span', 'bubble-text', live));
+        b.append(el('i', 'caret'));
+      } else {
+        b.append(el('i', 'dot'), el('i', 'dot'), el('i', 'dot'));
+      }
       row.append(b);
       scroll.append(row);
     }
@@ -574,7 +589,11 @@ export async function mount(root, ctx) {
       saveDraft(active.id, '');
 
       try {
+        typing = true;
+        streaming = null;
+        render();
         await api.send(active.id, text);
+        streaming = null;
         active = await api.thread(active.id);
         typing = false;
         render();
@@ -677,7 +696,19 @@ export async function mount(root, ctx) {
 
     onTyping({ on } = {}) {
       typing = !!on;
+      if (!on && !streaming) { /* 结束由 send 收尾 */ }
       if (active) render();
+    },
+
+    /** 外壳转来的流式增量 */
+    onDelta({ threadId, whole, delta } = {}) {
+      if (!active || String(threadId) !== String(active.id)) return;
+      const prev = streaming?.threadId === threadId ? streaming.text : '';
+      streaming = {
+        threadId,
+        text: typeof whole === 'string' ? whole : prev + String(delta ?? ''),
+      };
+      render();
     },
 
     leave() {

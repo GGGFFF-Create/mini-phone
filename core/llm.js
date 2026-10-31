@@ -33,7 +33,7 @@ export function createProfile(overrides = {}) {
     endpoint: '{{base}}/chat/completions',   // 可以用 {{base}} {{key}} {{model}}
     headers: {},               // 额外请求头，值里可用 {{key}} {{base}}
     body: {},                  // 额外请求体字段（top_p、presence_penalty…）
-    stream: false,             // 是否要流式（有些中转不支持）
+    stream: true,             // 默认开流式；不认 stream 的接口会自动退回整段返回
 
     note: '',
     ...overrides,
@@ -119,6 +119,20 @@ export function validateProfile(p) {
  *   - 流式 SSE
  *   - 429 / 5xx 退避重试
  */
+/**
+ * 这个错误是不是"接口不认流式"造成的。
+ * 典型：400/422，或者错误信息里提到 stream，或者 SSE 解析失败。
+ */
+function isStreamUnsupported(e) {
+  const msg = String(e?.message ?? '');
+  // 英文和中文都要认：readStream 抛的是中文（"流解析失败"），
+  // 而服务端返回的往往是英文（"invalid stream parameter"）。
+  if (/stream|sse|chunked/i.test(msg)) return true;
+  if (/流式|流解析|分块/i.test(msg)) return true;
+  if (e?.status === 400 || e?.status === 422) return true;
+  return false;
+}
+
 export function createClient(config = {}) {
   const profile = createProfile({
     base: config.url ?? config.base ?? '',
@@ -129,7 +143,7 @@ export function createClient(config = {}) {
     endpoint: config.endpoint ?? '{{base}}/chat/completions',
     headers: config.headers ?? {},
     body: config.body ?? {},
-    stream: config.stream ?? false,
+    stream: config.stream ?? true,
     ...config,
   });
 
@@ -227,6 +241,17 @@ export function createClient(config = {}) {
           return await once(messages, opts);
         } catch (e) {
           lastError = e;
+
+          /*
+           * 流式回退：有些中转不认 stream 参数，直接 400 或返回解析不了的 SSE。
+           * 别把这当成"接口坏了"，关掉流式再试一次 —— 变成等整段返回，至少能用。
+           */
+          if (opts.stream !== false && isStreamUnsupported(e)) {
+            console.info('[mini-phone] 这个接口不支持流式，改用整段返回重试');
+            opts = { ...opts, stream: false };
+            continue;
+          }
+
           const retryable = e.status === 429 || (e.status >= 500 && e.status < 600);
           if (!retryable || attempt === retries || opts.signal?.aborted) break;
           await sleep(800 * (attempt + 1));

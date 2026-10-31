@@ -327,6 +327,15 @@ window.__miniPhoneReceive = (type, payload = {}) => {
       if (current?.appId === 'moments') current.inst?.refresh?.();
       break;
 
+    case 'delta': {
+      /*
+       * 流式增量。只转给当前打开的 App —— 用户切走了就没必要重绘，
+       * 完整回复会在 send() 返回后照常落库。
+       */
+      try { current?.inst?.onDelta?.(payload); } catch { /* 忽略 */ }
+      break;
+    }
+
     case 'typing':
       if (current?.appId === 'chat') current.inst?.onTyping?.(payload);
       break;
