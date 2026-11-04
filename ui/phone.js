@@ -255,9 +255,18 @@ async function renderHome() {
     grid.append(tile);
   }
 
-  // 顶部信息：现在是哪个角色的手机
+  /*
+   * 顶部信息：这是"谁的手机"。
+   *
+   * 用的是 user（玩家的 persona 名），不是卡名。
+   * 卡名是"圣樱学院""LV99勇者回收计划"这种场景名，
+   * 写成「圣樱学院 的手机」就很怪 —— 手机明明是玩家自己的。
+   */
   const who = $('#home-who');
-  if (who) who.textContent = state.space?.name ? `${state.space.name} 的手机` : '';
+  if (who) {
+    const owner = String(state.space?.user ?? '').trim();
+    who.textContent = owner ? `${owner} 的手机` : '';
+  }
 }
 
 async function refreshBadges() {
